@@ -7,6 +7,8 @@ data/catalog/
 # Generated experiment outputs and the local official-reference image library
 data/experiments/
 data/references/
+# Local TCGSHOP price history (prices.py)
+data/prices/
 # Official card inventory (inventory.py) and its DRAW2-missing artwork export
 data/official_cards/
 data/references_missing/
