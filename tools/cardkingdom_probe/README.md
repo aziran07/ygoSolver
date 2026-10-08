@@ -32,9 +32,46 @@ search, sold-out listings, repeatability and AWS are outside this run's scope.
 Why this flow: on 2026-10-08 a local check from a home IP (recorded in
 `HANDOFF.md`) found that direct product requests returned HTTP 429 in every
 browser mode, while a headed Chromium window that first opened naver.com
-received HTTP 200 and the product JSON-LD. Whether the same flow passes from a
-GitHub-hosted runner or from AWS is **not yet verified**; no result for this flow
-has been recorded here.
+received HTTP 200 and the product JSON-LD. The GitHub-hosted follow-up below
+failed; AWS remains untested.
+
+## Headed previsit result (2026-10-08)
+
+[Actions run 37741376902](https://github.com/aziran07/ygoSolver/actions/runs/37741376902)
+tested commit `4469845986f04c18db57b30a7c5d178a3cc77852` at
+07:06:43–07:06:50 UTC. The image build, Xvfb and headed Chromium launched
+successfully with a 1 vCPU quota and 2 GiB memory limit. The container used
+Ubuntu 24.04.4, UID 1001, Playwright 1.63.0 and Chromium 153.0.8010.12, with
+the sandbox requested, zero initial cookies, native headers and
+`navigator.webdriver: true`.
+
+| Observation | Result |
+|---|---|
+| Naver previsit, waiting for `load` | HTTP 200 |
+| Cookies at the post-load observation | 4; NNB absent |
+| Single product document request | HTTP 429; no `Retry-After` |
+| Price/stock verification | Not reached; no product result |
+| Probe process / GitHub job | Exit 1 / failure |
+| Probe elapsed time / cgroup peak memory | 6.36 seconds / 452.05 MiB |
+
+The screenshot and rendered text show the service-unavailable page. There was
+no second product visit, retry, login interaction, proxy, stealth patch or user
+cookie import. The resource figures cover this short failed request flow,
+not a successful collection, sustained workload or minimum viable allocation.
+
+This flow did not reproduce the home-PC success on the tested data-center
+runner. NNB was absent at the observation point, but why it was absent and
+whether it caused the 429 are unresolved. The local and cloud environments
+also differ in OS and Playwright/browser version, so this does not isolate IP
+as the cause or prove all cloud environments fail. The success condition for
+an AWS follow-up was not met; no AWS resources were created.
+
+Codex ran 10 offline tests covering navigation order, load completion, access
+failures, no retries, and strict product/price/currency/stock validation. All
+passed. Downloaded report, CI log, runtime metadata and screenshot were reviewed
+independently; that consistency check passed while the live probe stayed failed.
+Local evidence: `data/experiments/cardkingdom_container/github_37741376902/`
+(`verify_evidence.py`, `independent_review.json`, raw artifact and failed-step log).
 
 ## Historical results (earlier flows, no longer run)
 
@@ -169,3 +206,10 @@ not show the store accepts requests from an AWS region/IP range, from Korean or
 other specific egress, at production frequency, or over time. Store responses
 (e.g. HTTP 429 or a login redirect) can depend on source IP reputation, so AWS
 accessibility needs the same image run from the target AWS environment.
+
+Fargate is not a drop-in target for this Docker invocation:
+[AWS documents](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-tasks-services.html)
+that `dockerSecurityOptions` and `sharedMemorySize` are unsupported. This probe
+uses a custom seccomp profile and `--shm-size=1g`. Whether a sandbox-preserving
+configuration works on Fargate requires separate validation; do not claim
+compatibility or disable the sandbox to make that test pass.
