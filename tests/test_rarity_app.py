@@ -7,6 +7,8 @@ import streamlit as st
 
 import catalog
 import rarities
+import deck_order
+from export_order_fixtures import app_sort_keys
 import recognition
 import references
 from test_app import ASH, JA_ONLY, CANDIDATES, row, start_app, download_buttons_disabled
@@ -14,6 +16,9 @@ from test_app import ASH, JA_ONLY, CANDIDATES, row, start_app, download_buttons_
 
 class RarityAppTest(unittest.TestCase):
     def setUp(self):
+        sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
+        sort_patch.start()
+        self.addCleanup(sort_patch.stop)
         st.cache_resource.clear()
         st.cache_data.clear()
         self.options = mock.Mock(side_effect=lambda cid: {12950: ["N", "SR", "UR"], 5050: ["SR", "UR"]}[cid])

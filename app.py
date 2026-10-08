@@ -506,7 +506,8 @@ for row in list(state.rows):
 
 # --- 4. Export ------------------------------------------------------------
 st.subheader("3. 내보내기")
-st.caption("기본 열은 카드명·수량·레어도입니다. 추가할 열을 고르세요.")
+st.caption("기본 열은 카드명·레어도·수량이며, 고른 열이 그 뒤에 붙습니다. 카드는 메인 덱 몬스터 → 마법 → 함정 → "
+           "엑스트라 덱 몬스터 순으로 정렬되고, 같은 카드의 레어도는 낮은 것부터 이어집니다.")
 EXPORT_OPTION_LABELS = {"name_ko": "한국어 카드명", "name_ja": "일본어 카드명", "name_en": "영어 카드명", "cid": "CID"}
 optional_fields = []
 for column, (field, label) in zip(st.columns(len(EXPORT_OPTION_LABELS)), EXPORT_OPTION_LABELS.items()):
@@ -521,7 +522,8 @@ if state.rows and not unresolved:
                 "name_ko": row["card"]["name_ko"], "name_ja": row["card"]["name_ja"],
                 "name_en": row["card"]["name_en"], "quantity": row["quantity"]} for row in state.rows]
     try:
-        cards = exports.aggregate(entries)
+        # Validation, aggregation and deck order all succeed or nothing is shown or downloadable.
+        cards = exports.sort_cards(exports.aggregate(entries))
     except ValueError as error:
         export_error = str(error)
 
@@ -536,13 +538,13 @@ if cards:
              f" (카드·레어도별 {len(cards)}줄)")
 
 # Any change to what would be exported (images, card identity, rarity, language, names, quantities,
-# added or deleted rows, selected optional columns) clears the confirmation, so the user must confirm the
-# final list again.
+# added or deleted rows, selected optional columns, the prepared lines and their deck order, including a
+# failed preparation) clears the confirmation, so the user must confirm the final list again.
 # signature[:3]: the candidate review mode only matters through the recognized rows it produced.
 export_fingerprint = (signature[:3], language_key, optional_fields, tuple(
     (row["key"], row["choice"], row["card"] and row["card"]["cid"], row.get("rarity"), export_name(row, language_key),
      row["quantity"])
-    for row in state.rows))
+    for row in state.rows), tuple((card["cid"], card["rarity"]) for card in cards))
 if export_fingerprint != state.export_fingerprint:
     state.confirmed = False
     state.export_fingerprint = export_fingerprint

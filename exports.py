@@ -6,9 +6,10 @@ import io
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
+import deck_order
 import rarities
 
-# Columns the user can add to the export, in their fixed output order between 수량 and 레어도.
+# Columns the user can add to the export, in their fixed output order after 카드명, 레어도, 수량.
 OPTIONAL_COLUMNS = {"name_ko": "한국어 이름", "name_ja": "일본어 이름", "name_en": "영어 이름", "cid": "공식 CID"}
 
 # Spreadsheet apps treat cells starting with these characters as formulas.
@@ -56,6 +57,15 @@ def aggregate(entries):
     return list(by_cid_rarity.values())
 
 
+def sort_cards(cards, database_path=deck_order.DATABASE_PATH):
+    """Return a new list of the aggregated cards in deck order (see deck_order), the same CID's rarities lowest first.
+
+    Raises deck_order.DeckOrderError (a ValueError) when any card's official order data is missing or invalid.
+    """
+    keys = deck_order.get_sort_keys([card["cid"] for card in cards], database_path=database_path)
+    return sorted(cards, key=lambda card: (keys[card["cid"]], rarities.RARITY_ORDER.index(card["rarity"])))
+
+
 def selected_fields(optional_fields):
     """Return the chosen optional fields in canonical order; unknown fields raise ValueError."""
     unknown = set(optional_fields) - OPTIONAL_COLUMNS.keys()
@@ -65,12 +75,12 @@ def selected_fields(optional_fields):
 
 
 def headers(optional_fields=()):
-    return ["카드명", "수량", *(OPTIONAL_COLUMNS[field] for field in selected_fields(optional_fields)), "레어도"]
+    return ["카드명", "레어도", "수량", *(OPTIONAL_COLUMNS[field] for field in selected_fields(optional_fields))]
 
 
 def row_values(card, optional_fields=()):
-    return [card["name"], card["quantity"], *(card[field] for field in selected_fields(optional_fields)),
-            rarities.RARITY_LABELS[card["rarity"]]]
+    return [card["name"], rarities.RARITY_LABELS[card["rarity"]], card["quantity"],
+            *(card[field] for field in selected_fields(optional_fields))]
 
 
 HEADERS = headers(OPTIONAL_COLUMNS)

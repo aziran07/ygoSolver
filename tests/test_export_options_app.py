@@ -10,6 +10,8 @@ from openpyxl import load_workbook
 
 import exports
 import rarities
+import deck_order
+from export_order_fixtures import app_sort_keys
 import recognition
 import references
 from test_app import ASH, download_buttons_disabled, row, start_app
@@ -22,6 +24,9 @@ class ExportOptionsAppTest(unittest.TestCase):
     values = ("하루 우라라", "灰流うらら", "Ash Blossom & Joyous Spring", 12950)
 
     def setUp(self):
+        sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
+        sort_patch.start()
+        self.addCleanup(sort_patch.stop)
         self.files = {}
 
         def record_file(format_name, writer):
@@ -42,8 +47,8 @@ class ExportOptionsAppTest(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def assert_file_contents(self, app, indices):
-        headers = ["카드명", "수량", *[self.headers[i] for i in indices], "레어도"]
-        values = ["내 우라라", 3, *[self.values[i] for i in indices], "슈퍼 레어"]
+        headers = ["카드명", "레어도", "수량", *[self.headers[i] for i in indices]]
+        values = ["내 우라라", "슈퍼 레어", 3, *[self.values[i] for i in indices]]
         self.assertFalse(app.exception)
         self.assertEqual(list(app.dataframe[0].value.columns), headers)
         self.assertEqual(app.dataframe[0].value.values.tolist(), [values])
