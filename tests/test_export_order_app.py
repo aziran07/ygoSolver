@@ -80,10 +80,10 @@ class ExportOrderAppTest(unittest.TestCase):
             ["카드 3", "노멀", 1], ["카드 4", "노멀", 1], ["카드 5", "노멀", 1],
             ["카드 6", "노멀", 1],
         ]
-        expected = [values + PRICE_VALUES for values in expected]
+        expected = [values[:2] + ["일본판"] + values[2:] + PRICE_VALUES for values in expected]
         self.assertEqual(app.dataframe[0].value.values.tolist(), expected)
         app.checkbox(key="confirmed").check().run()
-        header = ["카드명", "레어도", "수량", *PRICE_HEADERS]
+        header = ["카드명", "레어도", "판본", "수량", *PRICE_HEADERS]
         self.assertEqual(list(csv.reader(io.StringIO(self.files["csv"].decode("utf-8-sig")))),
                          [header, *[["" if v is None else str(v) for v in values] for values in expected]])
         self.assertEqual(list(load_workbook(io.BytesIO(self.files["xlsx"])).active.values),
@@ -106,12 +106,12 @@ class ExportOrderAppTest(unittest.TestCase):
             ["카드 3", "노멀", 1], ["카드 4", "노멀", 1], ["카드 5", "노멀", 1],
             ["카드 6", "노멀", 1],
         ]
-        expected = [values + PRICE_VALUES for values in expected]
+        expected = [values[:2] + ["일본판"] + values[2:] + PRICE_VALUES for values in expected]
         self.assertEqual(app.dataframe[0].value.values.tolist(), expected)
         app.checkbox(key="confirmed").check().run()
         self.assertFalse(app.error)
         self.assertEqual(download_buttons_disabled(app), [False, False])
-        header = ["카드명", "레어도", "수량", *PRICE_HEADERS]
+        header = ["카드명", "레어도", "판본", "수량", *PRICE_HEADERS]
         self.assertEqual(list(csv.reader(io.StringIO(self.files["csv"].decode("utf-8-sig")))),
                          [header, *[["" if v is None else str(v) for v in values] for values in expected]])
         self.assertEqual(list(load_workbook(io.BytesIO(self.files["xlsx"])).active.values),

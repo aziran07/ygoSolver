@@ -28,7 +28,7 @@ CARD = {"cid": CID, "name_ko": NAME_KO, "name_ja": NAME_JA,
 
 
 def row(key="one", quantity=1):
-    return {"key": key, "source": "manual", "image_name": None, "index": None, "crop": None,
+    return {"key": key, "source": "manual", "image_name": None, "index": None, "crop": None, "locale": "ja",
             "candidates": [], "status": "manual", "choice": None, "card": dict(CARD),
             "error": None, "quantity": quantity, "name_override": ""}
 
@@ -173,7 +173,7 @@ class PriceAppTest(unittest.TestCase):
     def test_locale_is_independent_of_export_name_language(self):
         app = self.start()
         app.checkbox(key="confirmed").check().run()
-        app.radio(key="price_locale").set_value("한국판").run()
+        app.selectbox(key="locale_one").set_value("ko").run()
         self.assertFalse(app.exception)
         self.assertFalse(app.checkbox(key="confirmed").value)
         self.assertEqual(list(app.dataframe[0].value["카드명"]), [NAME_KO])
@@ -283,8 +283,8 @@ class PriceAppTest(unittest.TestCase):
                     self.assertFalse(app.checkbox(key="confirmed").value)
                     self.assert_downloads(app, True)
                     selected = [i for i in range(4) if mask & (1 << i)]
-                    expected_headers = ["카드명", "레어도", "수량", "단가(원)", "합계(원)", *[headers[i] for i in selected]]
-                    expected_values = [NAME_KO, "노멀", 3, 240, 720, *[values[i] for i in selected]]
+                    expected_headers = ["카드명", "레어도", "판본", "수량", "단가(원)", "합계(원)", *[headers[i] for i in selected]]
+                    expected_values = [NAME_KO, "노멀", "일본판", 3, 240, 720, *[values[i] for i in selected]]
                     self.assertEqual(list(app.dataframe[0].value.columns), expected_headers)
                     self.assertEqual(app.dataframe[0].value.values.tolist(), [expected_values])
                     app.checkbox(key="confirmed").check().run()

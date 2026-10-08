@@ -7,6 +7,7 @@
 !requirements-prices.txt
 # Web app image (Dockerfile.web)
 !app.py
+!card_language.py
 !card_prices.py
 !price_collector.py
 !catalog.py

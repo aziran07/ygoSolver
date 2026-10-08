@@ -11,7 +11,7 @@ import exports
 
 def entry(cid, name, quantity=1, rarity="N"):
     return {"cid": cid, "name": name, "name_ko": "한국어 " + name, "name_ja": "日本語" + name,
-            "name_en": name, "quantity": quantity, "rarity": rarity}
+            "name_en": name, "quantity": quantity, "rarity": rarity, "locale": "ja"}
 
 
 class QuantityTest(unittest.TestCase):
@@ -69,36 +69,36 @@ class FileTest(unittest.TestCase):
     optional_fields = ("name_ko", "name_ja", "name_en", "cid")
     cards = [
         {"cid": 12950, "name": "灰流うらら", "name_ko": "하루 우라라", "name_ja": "灰流うらら",
-         "name_en": "Ash Blossom & Joyous Spring", "quantity": 3, "rarity": "SR"},
+         "name_en": "Ash Blossom & Joyous Spring", "quantity": 3, "rarity": "SR", "locale": "ja"},
         {"cid": 99, "name": "=HYPERLINK(\"http://x\")", "name_ko": None, "name_ja": "-ja",
-         "name_en": "@en", "quantity": 1, "rarity": "N"},
+         "name_en": "@en", "quantity": 1, "rarity": "N", "locale": "ja"},
     ]
 
     def test_csv_round_trip_with_bom_and_formula_neutralized(self):
         data = exports.to_csv_bytes(self.cards, optional_fields=self.optional_fields)
         self.assertTrue(data.startswith(b"\xef\xbb\xbf"))
         rows = list(csv.reader(io.StringIO(data.decode("utf-8-sig"))))
-        self.assertEqual(rows[0], ["카드명", "레어도", "수량", "한국어 이름", "일본어 이름", "영어 이름", "공식 CID"])
-        self.assertEqual(rows[1], ["灰流うらら", "슈퍼 레어", "3", "하루 우라라", "灰流うらら", "Ash Blossom & Joyous Spring", "12950"])
-        self.assertEqual(rows[2], ["'=HYPERLINK(\"http://x\")", "노멀", "1", "", "'-ja", "'@en", "99"])
+        self.assertEqual(rows[0], ["카드명", "레어도", "판본", "수량", "한국어 이름", "일본어 이름", "영어 이름", "공식 CID"])
+        self.assertEqual(rows[1], ["灰流うらら", "슈퍼 레어", "일본판", "3", "하루 우라라", "灰流うらら", "Ash Blossom & Joyous Spring", "12950"])
+        self.assertEqual(rows[2], ["'=HYPERLINK(\"http://x\")", "노멀", "일본판", "1", "", "'-ja", "'@en", "99"])
 
     def test_xlsx_round_trip_keeps_text_never_formula(self):
         sheet = load_workbook(io.BytesIO(exports.to_xlsx_bytes(self.cards, optional_fields=self.optional_fields))).active
         rows = [[cell.value for cell in row] for row in sheet.iter_rows()]
-        self.assertEqual(rows[0], ["카드명", "레어도", "수량", "한국어 이름", "일본어 이름", "영어 이름", "공식 CID"])
-        self.assertEqual(rows[1], ["灰流うらら", "슈퍼 레어", 3, "하루 우라라", "灰流うらら", "Ash Blossom & Joyous Spring", 12950])
+        self.assertEqual(rows[0], ["카드명", "레어도", "판본", "수량", "한국어 이름", "일본어 이름", "영어 이름", "공식 CID"])
+        self.assertEqual(rows[1], ["灰流うらら", "슈퍼 레어", "일본판", 3, "하루 우라라", "灰流うらら", "Ash Blossom & Joyous Spring", 12950])
         self.assertEqual(rows[2][0], "=HYPERLINK(\"http://x\")")
         self.assertEqual(sheet["A3"].data_type, "s")
 
     def test_default_export_contains_only_display_name_quantity_and_rarity(self):
         csv_rows = list(csv.reader(io.StringIO(exports.to_csv_bytes(self.cards).decode("utf-8-sig"))))
         sheet = load_workbook(io.BytesIO(exports.to_xlsx_bytes(self.cards))).active
-        self.assertEqual(csv_rows[0], ["카드명", "레어도", "수량"])
-        self.assertEqual(csv_rows[1], ["灰流うらら", "슈퍼 레어", "3"])
+        self.assertEqual(csv_rows[0], ["카드명", "레어도", "판본", "수량"])
+        self.assertEqual(csv_rows[1], ["灰流うらら", "슈퍼 레어", "일본판", "3"])
         self.assertEqual(list(sheet.values), [
-            ("카드명", "레어도", "수량"),
-            ("灰流うらら", "슈퍼 레어", 3),
-            ('=HYPERLINK("http://x")', "노멀", 1),
+            ("카드명", "레어도", "판본", "수량"),
+            ("灰流うらら", "슈퍼 레어", "일본판", 3),
+            ('=HYPERLINK("http://x")', "노멀", "일본판", 1),
         ])
         self.assertEqual(sheet["A3"].data_type, "s")
 
@@ -109,8 +109,8 @@ class FileTest(unittest.TestCase):
             for indices in combinations(range(4), count):
                 fields = tuple(self.optional_fields[i] for i in reversed(indices))
                 with self.subTest(fields=fields):
-                    expected_headers = ["카드명", "레어도", "수량", *[labels[i] for i in indices]]
-                    expected_values = ["灰流うらら", "슈퍼 레어", 3, *[values[i] for i in indices]]
+                    expected_headers = ["카드명", "레어도", "판본", "수량", *[labels[i] for i in indices]]
+                    expected_values = ["灰流うらら", "슈퍼 레어", "일본판", 3, *[values[i] for i in indices]]
                     csv_rows = list(csv.reader(io.StringIO(
                         exports.to_csv_bytes(self.cards[:1], optional_fields=fields).decode("utf-8-sig"))))
                     sheet = load_workbook(io.BytesIO(
