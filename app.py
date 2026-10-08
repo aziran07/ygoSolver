@@ -638,9 +638,9 @@ for row in list(state.rows):
 
 # --- 4. Export ------------------------------------------------------------
 st.subheader("3. 내보내기")
-st.caption("기본 열은 카드명·레어도·수량이며, 고른 열과 가격 열(단가·합계·가격 상태·상세·판본·수록 번호·상품 URL·관찰 시각)이 "
-           "그 뒤에 붙습니다. 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품의 최저가를 쓰고 가격 상태와 가격 상세에 "
-           "표시합니다. 가격을 확인할 수 없는 줄은 금액을 비우고 가격 상태에 이유를 적습니다. 카드는 메인 덱 몬스터 → 마법 → 함정 → "
+st.caption("기본 열은 카드명·레어도·수량·단가·합계이며, 고른 이름·CID 열은 수량 뒤에, 고른 가격 열(가격 상태·상품 URL·"
+           "관찰 시각·수록 번호)은 합계 뒤에 붙습니다. 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품의 최저가를 쓰고, "
+           "가격을 확인할 수 없는 줄은 금액을 비웁니다(가격 상태 열에 이유). 카드는 메인 덱 몬스터 → 마법 → 함정 → "
            "엑스트라 덱 몬스터 순으로 정렬되고, 같은 카드의 레어도는 낮은 것부터 이어집니다.")
 EXPORT_OPTION_LABELS = {"name_ko": "한국어 카드명", "name_ja": "일본어 카드명", "name_en": "영어 카드명", "cid": "CID"}
 optional_fields = []
@@ -648,6 +648,13 @@ for column, (field, label) in zip(st.columns(len(EXPORT_OPTION_LABELS)), EXPORT_
     if column.checkbox(label, key=f"export_{field}"):
         optional_fields.append(field)
 optional_fields = tuple(optional_fields)
+EXPORT_PRICE_OPTION_LABELS = {"status": "가격 상태", "product_url": "상품 URL", "observed_at": "관찰 시각",
+                              "card_number": "수록 번호"}
+optional_price_fields = []
+for column, (field, label) in zip(st.columns(len(EXPORT_PRICE_OPTION_LABELS)), EXPORT_PRICE_OPTION_LABELS.items()):
+    if column.checkbox(label, key=f"export_price_{field}"):
+        optional_price_fields.append(field)
+optional_price_fields = tuple(optional_price_fields)
 unresolved = [row for row in state.rows if problems_of(row, language_key)]
 cards = []
 export_error = None
@@ -667,19 +674,21 @@ if unresolved:
 if export_error:
     st.error(export_error)
 if cards:
-    st.dataframe([dict(zip(exports.headers(optional_fields, include_price=True),
-                           exports.row_values(card, optional_fields, include_price=True)))
+    st.dataframe([dict(zip(exports.headers(optional_fields, include_price=True,
+                                           optional_price_fields=optional_price_fields),
+                           exports.row_values(card, optional_fields, include_price=True,
+                                              optional_price_fields=optional_price_fields)))
                   for card in cards], hide_index=True)
     st.write(f"총 {sum(card['quantity'] for card in cards)}장, {len({card['cid'] for card in cards})}종"
              f" (카드·레어도별 {len(cards)}줄)")
 
 # Any change to what would be exported (images, card identity, rarity, language, names, quantities,
-# added or deleted rows, selected optional columns, the price edition, the prepared lines with every exported
-# value including prices and price statuses, their deck order, including a failed preparation) clears the
+# added or deleted rows, selected optional and price columns, the price edition, the prepared lines with their full
+# price record even where a column is not exported, their deck order, including a failed preparation) clears the
 # confirmation, so the user must confirm the final list again. A price that expires shows as a changed status
 # on the next run.
 # signature[:3]: the candidate review mode only matters through the recognized rows it produced.
-export_fingerprint = (signature[:3], language_key, optional_fields, price_locale, tuple(
+export_fingerprint = (signature[:3], language_key, optional_fields, optional_price_fields, price_locale, tuple(
     (row["key"], row["choice"], row["card"] and row["card"]["cid"], row.get("rarity"), export_name(row, language_key),
      row["quantity"])
     for row in state.rows), tuple((card["cid"], card["rarity"], *exports.price_values(card)) for card in cards))
@@ -694,22 +703,25 @@ price_valid_until = min((card["price"]["expires_at"] for card in cards
                          if card["price"]["status"] in card_prices.PRICED_STATUSES), default=None)
 
 
-def confirmed_export(to_bytes, confirmed_cards, fields, valid_until):
-    """Download callable (run on click) for exactly the confirmed lines."""
+def confirmed_export(to_bytes, confirmed_cards, fields, price_fields, valid_until):
+    """Download callable (run on click) for exactly the confirmed lines and columns."""
     def build():
         if valid_until is not None and datetime.now(timezone.utc) >= valid_until:
             raise ValueError("확인한 가격이 만료되었습니다. 화면의 가격 상태를 다시 확인하고 최종 확인을 다시 하세요.")
-        return to_bytes(confirmed_cards, fields, include_price=True)
+        return to_bytes(confirmed_cards, fields, include_price=True, optional_price_fields=price_fields)
     return build
 
 
 download_columns = st.columns(2)
 download_columns[0].download_button(
     "Excel(XLSX) 다운로드",
-    confirmed_export(exports.to_xlsx_bytes, cards, optional_fields, price_valid_until) if ready else b"",
+    confirmed_export(exports.to_xlsx_bytes, cards, optional_fields, optional_price_fields, price_valid_until)
+    if ready else b"",
     file_name="deck.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", disabled=not ready)
 download_columns[1].download_button(
-    "CSV 다운로드", confirmed_export(exports.to_csv_bytes, cards, optional_fields, price_valid_until) if ready else b"",
+    "CSV 다운로드",
+    confirmed_export(exports.to_csv_bytes, cards, optional_fields, optional_price_fields, price_valid_until)
+    if ready else b"",
     file_name="deck.csv",
     mime="text/csv", disabled=not ready)

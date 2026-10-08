@@ -16,8 +16,8 @@ from openpyxl import load_workbook
 from streamlit.delta_generator import DeltaGenerator
 from price_test_fixtures import capture_downloads
 
-PRICE_HEADERS = ['단가(원)', '합계(원)', '가격 상태', '가격 상세', '가격 판본', '가격 수록 번호', '가격 상품 URL', '가격 관찰 시각(KST)']
-PRICE_VALUES = [None, None, 'config_error', 'DATABASE_URL 또는 REDIS_URL 환경 변수가 설정되지 않았습니다.', 'ja', None, None, None]
+PRICE_HEADERS = ['단가(원)', '합계(원)']
+PRICE_VALUES = [None, None]
 
 import exports
 import rarities

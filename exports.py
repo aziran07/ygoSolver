@@ -17,8 +17,11 @@ OPTIONAL_COLUMNS = {"name_ko": "한국어 이름", "name_ja": "일본어 이름"
 # Price columns appended after the optional columns when include_price is set. Each card then carries "price",
 # the card_prices.get_card_price result; amounts and observed time are filled for card_prices.PRICED_STATUSES ("ok" in
 # stock, "out_of_stock" sold out, "stock_unknown" stock not verifiable), every other status leaves them blank.
-PRICE_HEADERS = ["단가(원)", "합계(원)", "가격 상태", "가격 상세", "가격 판본", "가격 수록 번호", "가격 상품 URL",
-                 "가격 관찰 시각(KST)"]
+# 단가 and 합계 are always included; the price metadata columns the user can add follow them in this fixed order.
+# The price detail and the price edition are never exported.
+PRICE_HEADERS = ["단가(원)", "합계(원)"]
+OPTIONAL_PRICE_COLUMNS = {"status": "가격 상태", "product_url": "가격 상품 URL", "observed_at": "가격 관찰 시각(KST)",
+                          "card_number": "가격 수록 번호"}
 PRICE_FIELDS = {"status", "detail", "locale", "unit_price_krw", "card_number", "product_url", "observed_at"}
 KST = timezone(timedelta(hours=9), "KST")
 
@@ -93,13 +96,29 @@ def selected_fields(optional_fields):
     return [field for field in OPTIONAL_COLUMNS if field in optional_fields]
 
 
-def headers(optional_fields=(), include_price=False):
+def selected_price_fields(optional_price_fields, include_price):
+    """Return the chosen price metadata fields in canonical order.
+
+    Unknown fields raise ValueError even without prices, and so does choosing any price field without prices.
+    """
+    unknown = set(optional_price_fields) - OPTIONAL_PRICE_COLUMNS.keys()
+    if unknown:
+        raise ValueError(f"알 수 없는 가격 내보내기 열입니다: {sorted(unknown)!r}")
+    if optional_price_fields and not include_price:
+        raise ValueError(f"가격 열 없이 가격 내보내기 열을 고를 수 없습니다: {sorted(set(optional_price_fields))!r}")
+    return [field for field in OPTIONAL_PRICE_COLUMNS if field in optional_price_fields]
+
+
+def headers(optional_fields=(), include_price=False, optional_price_fields=()):
+    price_fields = selected_price_fields(optional_price_fields, include_price)
     return ["카드명", "레어도", "수량", *(OPTIONAL_COLUMNS[field] for field in selected_fields(optional_fields)),
-            *(PRICE_HEADERS if include_price else [])]
+            *(PRICE_HEADERS if include_price else []), *(OPTIONAL_PRICE_COLUMNS[field] for field in price_fields)]
 
 
 def price_values(card):
-    """Values of PRICE_HEADERS for one aggregated card; None (blank) wherever the status has no value."""
+    """The full validated price record of one aggregated card: unit price, total, status, detail, edition, card number,
+    product URL and observed time (KST); None (blank) wherever the status has no value. Only part of it is exported
+    (see exported_price_values), but the app's final confirmation covers all of it."""
     price = card.get("price")
     if not isinstance(price, dict) or not PRICE_FIELDS <= set(price):
         raise ValueError(f"CID {card['cid']} 줄에 가격 정보가 없거나 올바르지 않습니다: {price!r}")
@@ -120,10 +139,18 @@ def price_values(card):
             observed_at]
 
 
-def row_values(card, optional_fields=(), include_price=False):
+def exported_price_values(card, price_fields):
+    """Values of PRICE_HEADERS and the chosen price_fields (canonical order) for one aggregated card."""
+    unit, total, status, _detail, _locale, card_number, product_url, observed_at = price_values(card)
+    metadata = {"status": status, "product_url": product_url, "observed_at": observed_at, "card_number": card_number}
+    return [unit, total, *(metadata[field] for field in price_fields)]
+
+
+def row_values(card, optional_fields=(), include_price=False, optional_price_fields=()):
+    price_fields = selected_price_fields(optional_price_fields, include_price)
     return [card["name"], rarities.RARITY_LABELS[card["rarity"]], card["quantity"],
             *(card[field] for field in selected_fields(optional_fields)),
-            *(price_values(card) if include_price else [])]
+            *(exported_price_values(card, price_fields) if include_price else [])]
 
 
 HEADERS = headers(OPTIONAL_COLUMNS)
@@ -135,24 +162,24 @@ def _neutralize_formula(value):
     return value
 
 
-def to_csv_bytes(cards, optional_fields=(), include_price=False):
+def to_csv_bytes(cards, optional_fields=(), include_price=False, optional_price_fields=()):
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
-    writer.writerow(headers(optional_fields, include_price))
+    writer.writerow(headers(optional_fields, include_price, optional_price_fields))
     for card in cards:
         writer.writerow([_neutralize_formula("" if v is None else v)
-                         for v in row_values(card, optional_fields, include_price)])
+                         for v in row_values(card, optional_fields, include_price, optional_price_fields)])
     return buffer.getvalue().encode("utf-8-sig")
 
 
-def to_xlsx_bytes(cards, optional_fields=(), include_price=False):
-    header_row = headers(optional_fields, include_price)
+def to_xlsx_bytes(cards, optional_fields=(), include_price=False, optional_price_fields=()):
+    header_row = headers(optional_fields, include_price, optional_price_fields)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "덱"
     sheet.append(header_row)
     for card in cards:
-        sheet.append(row_values(card, optional_fields, include_price))
+        sheet.append(row_values(card, optional_fields, include_price, optional_price_fields))
         # Force text cells so names like "=..." are stored as text, never as formulas.
         for cell in sheet[sheet.max_row]:
             if isinstance(cell.value, str):
