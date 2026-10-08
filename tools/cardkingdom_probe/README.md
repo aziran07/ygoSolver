@@ -8,6 +8,30 @@ test file — no datasets, app code or credentials.
 Test contract: `python /probe/acceptance_cardkingdom_container.py --output /evidence`
 writes `report.json` plus rendered text/screenshots, exits 0 only when the
 browser search and both product checks succeed, nonzero otherwise.
+Arguments after the image name are passed to the test, e.g.
+`--header-profile baseline` or `--header-profile chrome-headers`. Each
+`report.json` records only allowlisted outgoing public header values in
+`documents[].request_headers` and the response `Retry-After` in
+`documents[].retry_after`.
+
+## Experimental header comparison (results pending)
+
+After the first run's HTTP 429, the workflow compares two conditions:
+
+| Run | Profile | Meaning |
+|---|---|---|
+| `run1` | `baseline` | The test's original request headers, unchanged |
+| `run2` | `chrome-headers` | Chrome-like public HTTP request headers |
+
+The Chrome-like profile changes only public HTTP client metadata. It does not
+reproduce Chrome's TLS fingerprint or full browser identity, and no actual
+Windows Chrome profile, cookies or session were copied. There is no User-Agent
+rotation and no retry loop. Source identity checks and app-level validation stay
+strict in both conditions. The local command below is unchanged and runs the
+baseline condition.
+
+The 429 below is historical evidence from the first run; results of this
+comparison are still pending.
 
 ## Observed result (2026-10-08)
 
@@ -72,9 +96,16 @@ reason to disable the sandbox.
 `.github/workflows/cardkingdom-probe.yml` runs on pushes to `feature/card-prices`
 touching the test, `Dockerfile`, `seccomp_profile.json` or the workflow, or
 manually via `workflow_dispatch` (no schedule or pull-request trigger).
-README-only changes do not trigger a store probe. It builds the image, runs one fresh container, and runs a
-second fresh container only if the first succeeded (cold-start
-reproducibility). Any probe failure fails the job. The `probe-output` folder
+README-only changes do not trigger a store probe. It builds the image once, then
+on the same runner runs two sequential fresh containers from that image:
+`run1` with `--header-profile baseline`, then `run2` with
+`--header-profile chrome-headers`. `run2` runs even if `run1` failed (unless the
+job was cancelled or the build failed), but only once and only when
+`run1/report.json` is valid, records environment data and
+`network_smoke_passed: true`, and no document has a `Retry-After`. If the server
+sent `Retry-After`, `run2` is not run and its step fails; no delay is improvised.
+Otherwise `run2` starts 30 seconds after `run1`. Any probe or gate failure fails
+the job, so a `run2` success cannot hide a `run1` failure. The `probe-output` folder
 (`run1/`, `run2/`, `metadata.txt`) is always uploaded as artifact
 `cardkingdom-probe-evidence` (3-day retention); HAR, zip/trace, `.js`,
 cookie/token/storage files are rejected (job fails) and excluded from upload.

@@ -18,6 +18,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 SHOP = "https://smartstore.naver.com/cardkingdom"
+PUBLIC_REQUEST_HEADERS = (
+    "user-agent", "accept", "accept-language", "accept-encoding",
+    "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+    "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-user",
+    "upgrade-insecure-requests", "priority",
+)
 PRODUCTS = (
     {
         "id": "4960632716",
@@ -43,6 +49,25 @@ def public_url(url):
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def chrome_headers(browser_version):
+    """Explicit HTTP-only experiment, not a copied user profile or TLS identity."""
+    major = browser_version.split(".")[0]
+    require(major.isdecimal(), "Cannot form Chrome headers from browser version")
+    return {
+        "user-agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+        ),
+        "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "sec-ch-ua": (
+            f'"Chromium";v="{major}", "Google Chrome";v="{major}", '
+            '"Not_A Brand";v="24"'
+        ),
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Linux"',
+    }
 
 
 def save_page(page, output, label):
@@ -114,6 +139,8 @@ def verify_product(page, expected, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--header-profile", choices=("baseline", "chrome-headers"),
+                        default="baseline")
     args = parser.parse_args()
     if args.output.exists() and any(args.output.iterdir()):
         parser.error("The evidence directory must be empty; preserve earlier runs separately")
@@ -122,6 +149,7 @@ def main():
         "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "failed",
         "phase": "environment",
+        "header_profile": args.header_profile,
         "environment": {
             "system": platform.system(),
             "kernel": platform.release(),
@@ -150,7 +178,17 @@ def main():
                 browser = playwright.chromium.launch(headless=True, chromium_sandbox=True)
                 report["environment"]["chromium"] = browser.version
                 report["environment"]["sandbox_requested"] = True
-                context = browser.new_context(viewport={"width": 1280, "height": 1000})
+                options = {"viewport": {"width": 1280, "height": 1000}}
+                configured_headers = {}
+                if args.header_profile == "chrome-headers":
+                    configured_headers = chrome_headers(browser.version)
+                    options["user_agent"] = configured_headers["user-agent"]
+                    options["extra_http_headers"] = {
+                        name: value for name, value in configured_headers.items()
+                        if name != "user-agent"
+                    }
+                report["configured_headers"] = configured_headers
+                context = browser.new_context(**options)
                 report["initial_cookie_count"] = len(context.cookies())
                 require(report["initial_cookie_count"] == 0, "Browser context is not fresh")
                 page = context.new_page()
@@ -161,6 +199,11 @@ def main():
                     request = response.request
                     record = {"url": public_url(response.url), "status": response.status}
                     if request.resource_type == "document" and request.frame == page.main_frame:
+                        headers = request.all_headers()
+                        record["request_headers"] = {
+                            name: headers[name] for name in PUBLIC_REQUEST_HEADERS if name in headers
+                        }
+                        record["retry_after"] = response.header_value("retry-after")
                         report["documents"].append(record)
                     if response.status >= 400 and urlsplit(response.url).hostname == "smartstore.naver.com":
                         report["http_errors"].append(record)
@@ -174,6 +217,13 @@ def main():
 
                 report["phase"] = "shop_home"
                 response = page.goto(SHOP, wait_until="domcontentloaded")
+                require(response is not None, "Shop navigation returned no response")
+                sent_headers = response.request.all_headers()
+                report["configured_headers_verified"] = all(
+                    sent_headers.get(name) == value for name, value in configured_headers.items()
+                )
+                require(report["configured_headers_verified"],
+                        "Configured HTTP headers were not sent as intended")
                 check_access(page, response, report)
                 page.get_by_role("button", name="검색어를 입력해주세요", exact=True).click()
                 report["phase"] = "shop_search"
