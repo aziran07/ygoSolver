@@ -1,6 +1,19 @@
-# Allowlist: the price image needs only these files. Everything else
-# (.env, .git, data/, userDataset/, outputs/, tests, app code) stays out.
+# Allowlist: images get only the files they COPY. Everything else
+# (.env, .git, data/, userDataset/, outputs/, tests, private photos) stays out.
 *
+# Price CLI image (Dockerfile.prices)
 !prices.py
 !price_store.py
 !requirements-prices.txt
+# Web app image (Dockerfile.web)
+!app.py
+!catalog.py
+!deck_order.py
+!exports.py
+!rarities.py
+!recognition.py
+!references.py
+!requirements.txt
+!.streamlit/config.toml
+!THIRD_PARTY_NOTICES.md
+!LICENSES/

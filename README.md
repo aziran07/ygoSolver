@@ -1,7 +1,7 @@
 # 유희왕 덱 사진 → 카드 목록 (ygoSolver)
 
 덱 사진(JPG/PNG/WebP) 또는 카메라 촬영 사진에서 카드를 인식하고, 카드마다 눈으로 확인·수정한 뒤
-카드명·레어도·수량(선택하면 한국어/일본어/영어 이름·공식 CID도)이 덱 순서로 담긴 Excel(XLSX)과 CSV(UTF-8 BOM)로 내려받는 로컬 웹앱입니다.
+카드명·레어도·수량(선택하면 한국어/일본어/영어 이름·공식 CID도)이 덱 순서로 담긴 Excel(XLSX)과 CSV(UTF-8 BOM)로 내려받는 웹앱입니다(Windows PC에서 직접 실행하거나 LAN 서버에서 Docker로 실행).
 앱 화면과 내보내기에는 아직 가격이 없습니다. 별도 명령 `prices.py`로 TCGSHOP 목록 한 페이지의 가격·재고 기록을 로컬 DB에 저장할 수 있습니다(아래 "카드 가격" 참고).
 
 ## 현재 기능 (2026-10-08)
@@ -60,6 +60,54 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 업로드는 서버에서 파일당 20MB로 제한되며(`maxUploadSize = 20`), 사용 통계 전송은 꺼져 있습니다.
 
 테스트: `.venv\Scripts\python -X utf8 -m unittest discover -s tests`
+
+## 서버 실행 (aziranserver, Docker)
+
+같은 앱을 서버 `aziranserver`의 `/home/pilon1945/ygoSolver`에서 컨테이너로 실행합니다(명령은 모두 이 저장소 루트에서).
+접속 주소: **http://192.168.1.122:8501** (같은 LAN 안에서만). HTTPS·로그인·도메인·인터넷 공개는 설정하지 않았습니다.
+올린 사진은 이 서버로 전송되어 처리됩니다.
+
+구성(`compose.yaml`의 `web`, 이미지 `ygosolver-web:local`, `Dockerfile.web`):
+
+- `python:3.12-slim-bookworm` + `requirements.txt`. 이미지에는 앱 `.py` 모듈, `requirements.txt`, `.streamlit/config.toml`,
+  `THIRD_PARTY_NOTICES.md`, `LICENSES/`만 들어갑니다(`.dockerignore` 허용 목록). `.env`, `.git`, `data/`, 테스트, 개인 사진은 넣지 않습니다.
+- UID/GID 1000(서버 소유자 `pilon1945`과 같음)의 비root 사용자, `WORKDIR /app`, `streamlit run app.py --server.headless=true --server.address=0.0.0.0 --server.port=8501`.
+  업로드 20MB 제한과 사용 통계 끄기는 `config.toml`을 그대로 씁니다. 컨테이너 안에서만 모든 인터페이스에서 듣고, 호스트에는 아래 주소로만 공개합니다.
+- 호스트 포트 `${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8501}` → 컨테이너 8501. 서버 `.env`에 `WEB_BIND_IP=192.168.1.122`, `WEB_PORT=8501`이 있습니다
+  (없으면 서버 자신에서만 접속 가능). 이 주소에만 바인딩하므로 서버 안에서도 `localhost:8501`이 아니라 LAN 주소로 접속합니다.
+- `/_stcore/health` healthcheck(파이썬 표준 `urllib`), `restart: unless-stopped`, 로그 회전(json-file 10MB × 3).
+- 가격 DB(PostgreSQL/Redis)와 연결하지 않으며 DB 접속 정보도 받지 않습니다. 앱 화면에는 가격이 없습니다.
+
+데이터(이미지에 넣지 않고 호스트 디렉터리를 연결). **컨테이너를 만들기 전에 모두 있어야 하며**, 없으면 Docker가 빈 디렉터리를 만들지 않고 `up`이 실패합니다:
+
+| 호스트 경로 | 컨테이너 경로 | 모드 | 내용 |
+| --- | --- | --- | --- |
+| `data/models` | `/app/data/models` | 읽기 전용 | DRAW2 모델 3개 |
+| `data/references` | `/app/data/references` | 읽기 전용 | 공식 참조 이미지 라이브러리 |
+| `data/official_cards` | `/app/data/official_cards` | 읽기 전용 | 공식 카드·레어도 DB `official_cards.sqlite` |
+| `data/catalog` | `/app/data/catalog` | 쓰기 | 공식 이름 조회 캐시 |
+| `data/candidate_references` | `/app/data/candidate_references` | 쓰기 | 후보별 공식 일러스트 캐시 |
+
+`data/prices`, `.env`, 개인 사진, 저장소 전체는 연결하지 않습니다. 모든 디렉터리와 파일은 UID/GID 1000 소유여야 합니다
+(`chown -R 1000:1000 data/models data/references data/official_cards data/catalog data/candidate_references`, 쓰기 디렉터리는 `u+rwX`).
+컨테이너는 이 데이터를 만들거나 내려받지 않으므로 Windows 작업 폴더의 같은 경로에서 서버로 복사해 둡니다.
+`data/models`가 읽기 전용이라 모델이 없으면 화면의 다운로드 버튼은 쓰기 오류로 실패합니다. 모델·라이브러리·DB가 없거나 손상되면 앱이 기존 오류 메시지를 그대로 표시합니다.
+공식 이름 조회와 후보별 공식 일러스트 다운로드는 이 서버에서 공식 카드 DB에 접속합니다.
+
+명령:
+
+```sh
+docker compose build web                 # 이미지 만들기 (앱 코드를 바꾼 뒤에도 필요)
+docker compose up -d web                 # 시작/재생성 (postgres·redis는 건드리지 않음)
+docker compose ps web                    # 상태 (healthy 확인)
+docker compose logs -f --tail=100 web    # 로그
+docker compose restart web               # 재시작
+curl -s http://192.168.1.122:8501/_stcore/health   # "ok"
+```
+
+코드 갱신: `git pull`(해당 브랜치) → `docker compose build web` → `docker compose up -d web`.
+데이터만 바꾼 경우(모델·라이브러리·DB 교체)에는 `docker compose restart web`으로 앱이 다시 읽게 합니다.
+중지는 `docker compose stop web`입니다. 볼륨을 지우는 `down -v`는 가격 DB 데이터를 지우므로 쓰지 마세요.
 
 ## 첫 실행: 모델 다운로드 (약 427MB)
 
@@ -373,7 +421,8 @@ python3 tests/acceptance_price_stack.py --recreate   # 컨테이너 재생성 �
   반사가 심해 그림이 가려진 카드는 일치하지 않고 DRAW2 결과로 남습니다. 같은 카드를 기본 일러스트만 등록하면
   다른 일러스트 카드는 찾지 못할 수 있습니다(아래 평가 참고).
 - 공식 이미지 비교는 느립니다. 라이브러리를 불러오는 데 몇 초가 걸리고 카드마다 비교 시간이 더해지며, 속도는 아직 개선 중이라 확정 수치를 적지 않습니다.
-- 사진은 외부로 업로드되지 않습니다. 인식은 이 컴퓨터의 CPU(onnxruntime, OpenCV)에서 실행됩니다.
+- 사진은 앱을 실행하는 컴퓨터로만 보내지고 그 밖의 외부로는 업로드되지 않습니다. 인식은 그 컴퓨터의 CPU(onnxruntime, OpenCV)에서 실행됩니다.
+  Windows에서 직접 실행하면 이 PC 안에서만 처리되지만, **서버(아래 "서버 실행")로 접속하면 올린 사진이 같은 LAN의 HTTP로 그 서버에 전송되어 처리됩니다**(암호화·로그인 없음).
   네트워크는 모델 최초 다운로드, 공식 이름 조회, 참조 라이브러리 등록(`references.py`), 후보별 공식 일러스트 다운로드,
   공식 목록·레어도 DB 준비(`inventory.py`·`rarities.py`)에만 쓰입니다. 앱은 레어도를 로컬 DB에서만 읽습니다.
 

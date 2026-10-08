@@ -1,6 +1,8 @@
 # Price data layer: PostgreSQL price history + Redis 12-hour cache.
 # Neither database publishes a host port; only services on this project's
 # network can reach them. The price CLI runs on demand (profile "tools").
+# The web app (Streamlit) publishes WEB_BIND_IP:WEB_PORT for LAN access and
+# does not use the price databases.
 name: ygosolver
 
 x-logging: &logging
@@ -57,6 +59,43 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: ygosolver-web:local
+    restart: unless-stopped
+    ports:
+      - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8501}:8501"
+    # Only the runtime data the app reads; host dirs must exist (owned by
+    # UID/GID 1000) so a missing provisioning step fails instead of Docker
+    # creating empty root-owned directories.
+    volumes:
+      - type: bind
+        source: ./data/models
+        target: /app/data/models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./data/references
+        target: /app/data/references
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./data/official_cards
+        target: /app/data/official_cards
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./data/catalog
+        target: /app/data/catalog
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./data/candidate_references
+        target: /app/data/candidate_references
+        bind: {create_host_path: false}
     logging: *logging
 
 volumes:
