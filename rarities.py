@@ -137,10 +137,16 @@ class RarityUnavailable(RarityError):
 
 # ---------------------------------------------------------------- reading
 
-def get_rarities(cid, database_path=DATABASE_PATH):
-    """Rarity keys (see RARITIES) of every KO/JA printing of cid, unique and in RARITY_ORDER (lowest first)."""
+def get_rarities(cid, database_path=DATABASE_PATH, *, locale=None):
+    """Rarity keys (see RARITIES) of every KO/JA printing of cid, unique and in RARITY_ORDER (lowest first).
+
+    With locale ('ko' or 'ja') only that edition's printings count, after the same validation of the whole card;
+    a card without any printing in that edition raises RarityUnavailable.
+    """
     if type(cid) is not int or cid <= 0:
         raise RarityError(f"CID must be a positive int, got {cid!r}")
+    if locale is not None and locale not in LOCALES:
+        raise ValueError(f"locale must be None or one of {LOCALES}, got {locale!r}")
     database_path = Path(database_path)
     if not database_path.is_file():
         raise RarityError(f"{database_path} does not exist; run inventory.py and rarities.py first")
@@ -168,20 +174,24 @@ def get_rarities(cid, database_path=DATABASE_PATH):
         raise RarityError(f"CID {cid} has prints from locales {foreign} outside its KO/JA listings {sorted(listed)}")
     if not listed:
         raise RarityUnavailable(f"CID {cid} is not listed in the Korean or Japanese official card list")
-    for locale in sorted(listed):
-        has_prints = any(print_locale == locale for print_locale, _ in prints)
-        if coverage[locale] not in ("printed", "no_printing") or (coverage[locale] == "printed") != has_prints:
-            raise RarityError(f"CID {cid} {locale} coverage is {coverage[locale]!r} but it has "
-                              f"{'some' if has_prints else 'no'} {locale} prints")
+    for listed_locale in sorted(listed):
+        has_prints = any(print_locale == listed_locale for print_locale, _ in prints)
+        if coverage[listed_locale] not in ("printed", "no_printing")                 or (coverage[listed_locale] == "printed") != has_prints:
+            raise RarityError(f"CID {cid} {listed_locale} coverage is {coverage[listed_locale]!r} but it has "
+                              f"{'some' if has_prints else 'no'} {listed_locale} prints")
     unknown = sorted({rid for _, rid in prints} - set(RARITY_KEYS_BY_RID))
     if unknown:
         raise RarityError(f"CID {cid} has rarity rids unknown to this app: {unknown}")
-    for locale, rid, code in printed_codes:
-        expected = RARITIES[RARITY_KEYS_BY_RID[rid]][1][locale]
+    for print_locale, rid, code in printed_codes:
+        expected = RARITIES[RARITY_KEYS_BY_RID[rid]][1][print_locale]
         if code != expected:
-            raise RarityError(f"CID {cid} {locale} print of rid {rid} has code {code!r}, RARITIES expects {expected!r}")
+            raise RarityError(f"CID {cid} {print_locale} print of rid {rid} has code {code!r}, RARITIES expects {expected!r}")
     if not prints:
         raise RarityUnavailable(f"CID {cid} has no Korean or Japanese printing (listed in {sorted(listed)})")
+    if locale is not None:
+        prints = {(print_locale, rid) for print_locale, rid in prints if print_locale == locale}
+        if not prints:
+            raise RarityUnavailable(f"CID {cid} has no {locale} printing")
     return sorted({RARITY_KEYS_BY_RID[rid] for _, rid in prints}, key=RARITY_ORDER.index)
 
 

@@ -10,6 +10,7 @@ from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 import catalog
+import card_language
 import recognition
 import references
 import rarities
@@ -20,6 +21,11 @@ from test_app import APP_PATH, ASH, JA_ONLY, LIBRARY, download_buttons_disabled,
 
 class CandidateModeTest(unittest.TestCase):
     def setUp(self):
+        edition = mock.patch.object(card_language, "detect_language", return_value={
+            "locale": "ja", "status": "classified", "reason": "일본어 문자 근거", "evidence": {},
+            "elapsed_seconds": 0.01})
+        edition.start()
+        self.addCleanup(edition.stop)
         sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
         sort_patch.start()
         self.addCleanup(sort_patch.stop)

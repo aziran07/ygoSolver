@@ -36,7 +36,7 @@ def make_database(path, records):
 def export_card(cid, name=None, quantity=1, rarity="N"):
     return {"cid": cid, "name": name or f"カード {cid}", "name_ko": f"카드 {cid}",
             "name_ja": f"カード {cid}", "name_en": f"Card {cid}",
-            "quantity": quantity, "rarity": rarity}
+            "quantity": quantity, "rarity": rarity, "locale": "ja"}
 
 
 # Existing UI tests isolate recognition/rarity/editing from local inventory I/O.
