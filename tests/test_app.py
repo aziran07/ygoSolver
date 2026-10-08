@@ -12,6 +12,8 @@ import catalog
 import recognition
 import references
 import rarities
+import deck_order
+from export_order_fixtures import app_sort_keys
 
 APP_PATH = str(Path(__file__).resolve().parents[1] / "app.py")
 
@@ -45,6 +47,9 @@ def download_buttons_disabled(app):
 
 class AppTestCase(unittest.TestCase):
     def setUp(self):
+        sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
+        sort_patch.start()
+        self.addCleanup(sort_patch.stop)
         rarity_patch = mock.patch.object(rarities, "get_rarities", return_value=["N", "SR"])
         rarity_patch.start()
         self.addCleanup(rarity_patch.stop)
@@ -349,6 +354,9 @@ def reference_match(card, inliers=24):
 
 class UploadTest(unittest.TestCase):
     def setUp(self):
+        sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
+        sort_patch.start()
+        self.addCleanup(sort_patch.stop)
         rarity_patch = mock.patch.object(rarities, "get_rarities", return_value=["N", "SR"])
         rarity_patch.start()
         self.addCleanup(rarity_patch.stop)
@@ -509,6 +517,9 @@ class UploadTest(unittest.TestCase):
 
 class ReferenceModeTest(unittest.TestCase):
     def setUp(self):
+        sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
+        sort_patch.start()
+        self.addCleanup(sort_patch.stop)
         rarity_patch = mock.patch.object(rarities, "get_rarities", return_value=["N", "SR"])
         rarity_patch.start()
         self.addCleanup(rarity_patch.stop)
