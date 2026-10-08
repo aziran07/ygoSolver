@@ -1,20 +1,22 @@
 """EDOPro-style deck order of official cards, read from the local official card DB.
 
-get_sort_keys(cids) reads each card's Japanese official list metadata (cards.list_info["ja"]) and canonical
+get_sort_keys(cids) reads each card's Japanese official list metadata (cards.list_info["ja"]) and optional
 passcode (cards.ygoprodeck_id) from data/official_cards/official_cards.sqlite and returns an ordering tuple per CID:
 
-    (group, subtype, -level, -atk, -def, passcode, cid)
+    (group, subtype, -level, -atk, -def, passcode is None, passcode, cid)
 
 group: main-deck monsters < spells < traps < extra-deck monsters. Extra-deck monsters are Fusion, Synchro, Xyz and
 Link, including their Pendulum hybrids; Ritual and other Pendulum monsters stay in the main deck.
 subtype: main Normal < Effect < Ritual; extra Fusion < Synchro < Xyz < Link; spells Normal < Ritual < Quick-Play <
 Continuous < Equip < Field; traps Normal < Continuous < Counter.
 Monsters of one subtype sort by Level/Rank/Link rating, ATK, DEF (all descending), then passcode and CID ascending.
+Some official cards have no passcode mapping (NULL ygoprodeck_id); only within an exact tie on the dimensions above do
+they follow the mapped cards, ordered by CID. The "passcode is None" flag keeps None from being compared with ints.
 An ATK/DEF of "?" sorts below 0; a Link monster's DEF "-" weighs the same for every Link monster. Spells and traps
 use 0 for the stats. CID only separates different cards that share a passcode. Name, race, attribute, Pendulum
 scale and Tuner/Spirit/Union/Flip status do not affect the order.
 
-Missing or unparseable data raises DeckOrderError; nothing is guessed and there is no alternative order.
+Missing or unparseable required data, or a present but invalid passcode, raises DeckOrderError; nothing is guessed and there is no alternative order.
 """
 
 import json
@@ -70,8 +72,8 @@ def get_sort_keys(cids, database_path=DATABASE_PATH):
         if cid not in rows:
             raise DeckOrderError(f"CID {cid}: 공식 카드 DB 스냅숏에 없어 정렬할 수 없습니다.")
         list_info, passcode = rows[cid]
-        if type(passcode) is not int or passcode <= 0:
-            raise DeckOrderError(f"CID {cid}: 공식 카드 DB에 카드 번호(passcode)가 없어 정렬할 수 없습니다 "
+        if passcode is not None and (type(passcode) is not int or passcode <= 0):
+            raise DeckOrderError(f"CID {cid}: 공식 카드 DB의 카드 번호(passcode)가 잘못되어 정렬할 수 없습니다 "
                                  f"(ygoprodeck_id {passcode!r}).")
         try:
             japanese = json.loads(list_info)["ja"]
@@ -83,7 +85,7 @@ def get_sort_keys(cids, database_path=DATABASE_PATH):
         except (KeyError, TypeError, ValueError) as error:
             raise DeckOrderError(f"CID {cid}: 일본어 공식 카드 정보를 해석할 수 없어 정렬할 수 없습니다 "
                                  f"({type(error).__name__}: {error}).") from error
-        keys[cid] = (group, subtype, -level, -atk, -defense, passcode, cid)
+        keys[cid] = (group, subtype, -level, -atk, -defense, passcode is None, passcode, cid)
     return keys
 
 

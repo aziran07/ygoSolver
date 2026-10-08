@@ -90,13 +90,36 @@ class ExportOrderAppTest(unittest.TestCase):
         self.assertEqual(list(app.dataframe[0].value["카드명"]),
                          ["Card 1", "Card 2", "Card 2", "Card 3", "Card 4", "Card 5", "Card 6"])
 
+    def test_missing_passcodes_allow_preview_and_both_downloads(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE cards SET ygoprodeck_id=NULL WHERE cid IN (2, 4, 5)")
+        app = self.prepared_app()
+        before = copy.deepcopy(app.session_state["rows"])
+        self.assertFalse(app.exception)
+        self.assertFalse(app.error)
+        expected = [
+            ["카드 1", "노멀", 1], ["카드 2", "노멀", 2], ["카드 2", "슈퍼 레어", 1],
+            ["카드 3", "노멀", 1], ["카드 4", "노멀", 1], ["카드 5", "노멀", 1],
+            ["카드 6", "노멀", 1],
+        ]
+        self.assertEqual(app.dataframe[0].value.values.tolist(), expected)
+        app.checkbox(key="confirmed").check().run()
+        self.assertFalse(app.error)
+        self.assertEqual(download_buttons_disabled(app), [False, False])
+        header = ["카드명", "레어도", "수량"]
+        self.assertEqual(list(csv.reader(io.StringIO(self.files["csv"].decode("utf-8-sig")))),
+                         [header, *[[str(v) for v in values] for values in expected]])
+        self.assertEqual(list(load_workbook(io.BytesIO(self.files["xlsx"])).active.values),
+                         [tuple(header), *[tuple(values) for values in expected]])
+        self.assertEqual(app.session_state["rows"], before)
+
     def test_metadata_failure_removes_previous_preview_blocks_downloads_and_requires_reconfirmation(self):
         app = self.prepared_app()
         app.checkbox(key="confirmed").check().run()
         self.assertEqual(download_buttons_disabled(app), [False, False])
         before = copy.deepcopy(app.session_state["rows"])
         with closing(sqlite3.connect(self.database)) as connection, connection:
-            connection.execute("UPDATE cards SET ygoprodeck_id=NULL WHERE cid=5")
+            connection.execute("UPDATE cards SET list_info=? WHERE cid=5", ('{"ja": {}}',))
         app.run()
         self.assertFalse(app.exception)
         self.assertTrue(any("5" in error.value for error in app.error))
@@ -105,10 +128,27 @@ class ExportOrderAppTest(unittest.TestCase):
         self.assertFalse(app.checkbox(key="confirmed").value)
         self.assertEqual(app.session_state["rows"], before)
         with closing(sqlite3.connect(self.database)) as connection, connection:
-            connection.execute("UPDATE cards SET ygoprodeck_id=90005 WHERE cid=5")
+            connection.execute("UPDATE cards SET list_info=? WHERE cid=5",
+                               (json.dumps({"ja": monster("融合／ペンデュラム／効果")}),))
         app.run()
         self.assertFalse(app.error)
         self.assertEqual(len(app.dataframe), 1)
+        self.assertEqual(download_buttons_disabled(app), [True, True])
+
+    def test_mapping_removed_from_tied_card_reorders_and_requires_reconfirmation(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE cards SET list_info=? WHERE cid=1",
+                               (json.dumps({"ja": monster(level=7)}),))
+        app = self.prepared_app()
+        self.assertEqual(list(app.dataframe[0].value["카드명"])[:3], ["카드 1", "카드 2", "카드 2"])
+        app.checkbox(key="confirmed").check().run()
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE cards SET ygoprodeck_id=NULL WHERE cid=1")
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.error)
+        self.assertEqual(list(app.dataframe[0].value["카드명"])[:3], ["카드 2", "카드 2", "카드 1"])
+        self.assertFalse(app.checkbox(key="confirmed").value)
         self.assertEqual(download_buttons_disabled(app), [True, True])
 
     def test_changed_actual_order_invalidates_previous_confirmation(self):

@@ -130,9 +130,38 @@ class DeckOrderTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "1"):
                     deck_order.get_sort_keys([1], database_path=self.database)
 
-    def test_missing_or_invalid_passcode_is_explicit(self):
+    def test_missing_passcodes_use_cid_only_after_type_and_stats_and_mapped_ties(self):
+        self.assert_order([
+            (1, monster(level=8), None),
+            (2, monster(), None),
+            (3, monster(), 90000),
+            (4, monster(), 100),
+            (5, monster(), None),
+            (6, monster(level=1), 1),
+            (7, spell_trap("魔法"), None),
+            (8, spell_trap("罠"), None),
+            (9, monster("融合／効果"), None),
+        ], [1, 4, 3, 2, 5, 6, 7, 8, 9])
+
+    def test_all_missing_passcodes_keep_card_identity_and_rarity_groups(self):
+        make_database(self.database, [(10, monster(), None), (20, monster(), None)])
+        cards = [export_card(20), export_card(10, rarity="SR"),
+                 export_card(10, quantity=2), export_card(10, quantity=3)]
+        for seed in range(3):
+            with self.subTest(seed=seed):
+                random.Random(seed).shuffle(cards)
+                actual = exports.sort_cards(exports.aggregate(cards), database_path=self.database)
+                self.assertEqual([(c["cid"], c["rarity"], c["quantity"]) for c in actual],
+                                 [(10, "N", 5), (10, "SR", 1), (20, "N", 1)])
+
+    def test_absent_passcode_does_not_hide_invalid_required_metadata(self):
+        make_database(self.database, [(1, {**monster(), "atk": "broken"}, None)])
+        with self.assertRaisesRegex(ValueError, "CID 1: .*broken"):
+            deck_order.get_sort_keys([1], database_path=self.database)
+
+    def test_invalid_present_passcode_is_explicit(self):
         make_database(self.database, [(1, monster(), 100)])
-        for passcode in (None, 0, -1, "broken"):
+        for passcode in (0, -1, "broken", "", 1.5):
             with self.subTest(passcode=passcode):
                 with closing(sqlite3.connect(self.database)) as connection, connection:
                     connection.execute("UPDATE cards SET ygoprodeck_id=?", (passcode,))
