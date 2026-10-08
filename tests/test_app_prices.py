@@ -118,8 +118,7 @@ class PriceAppTest(unittest.TestCase):
         self.assertIn("수집", visible)
 
     def test_separate_field_distinguishes_stock_expiry_and_backend_failures(self):
-        cases = [("out_of_stock", None, "no_stock"),
-                 ("in_stock", price_store.StalePriceError("expired proof"), "collection_failed"),
+        cases = [("in_stock", price_store.StalePriceError("expired proof"), "collection_failed"),
                  ("in_stock", price_store.PriceDatabaseError("db proof"), "database_error"),
                  ("in_stock", price_store.PriceCacheError("cache proof"), "cache_error")]
         seen = set()
@@ -132,7 +131,35 @@ class PriceAppTest(unittest.TestCase):
                 self.assertEqual(app.selectbox(key="rarity_one").options, ["노멀", "울트라 레어"])
                 self.assertNotEqual(app.metric[0].value, "가격 미수집")
                 seen.add(app.metric[0].value)
-        self.assertEqual(len(seen), 4)
+        self.assertEqual(len(seen), 3)
+
+    def test_sold_out_and_unknown_show_numeric_price_and_visible_availability(self):
+        for stock, status, label in [('out_of_stock', 'out_of_stock', '품절'),
+                                     ('unknown', 'stock_unknown', '재고 확인 불가')]:
+            with self.subTest(stock=stock):
+                self.stock = stock
+                app = self.start([row(quantity=3)])
+                self.assertEqual(app.metric[0].value, '240원')
+                visible = ' '.join(element.value for kind in ('caption', 'warning', 'info') for element in app.get(kind))
+                self.assertIn(label, visible)
+                self.assertEqual(list(app.dataframe[0].value['가격 상태']), [status])
+                self.assertEqual(list(app.dataframe[0].value['단가(원)']), [240])
+                self.assertEqual(list(app.dataframe[0].value['합계(원)']), [720])
+                self.collect.assert_not_called()
+                app.checkbox(key='confirmed').check().run()
+                self.assertTrue(app.checkbox(key='confirmed').value)
+                self.assert_downloads(app, False)
+
+    def test_stock_change_with_same_price_resets_confirmation(self):
+        self.stock = 'out_of_stock'
+        app = self.start()
+        app.checkbox(key='confirmed').check().run()
+        self.stock = 'unknown'
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.checkbox(key='confirmed').value)
+        self.assertEqual(app.metric[0].value, '240원')
+        self.assertEqual(list(app.dataframe[0].value['가격 상태']), ['stock_unknown'])
 
     def test_locale_is_independent_of_export_name_language(self):
         app = self.start()
@@ -253,16 +280,19 @@ class PriceAppTest(unittest.TestCase):
                 callbacks[kwargs["file_name"]] = data
             return original(container, label, data, *args, **kwargs)
 
-        with mock.patch.object(DeltaGenerator, "download_button", capture):
-            app = self.start()
-            app.checkbox(key="confirmed").check().run()
-        self.assertEqual(set(callbacks), {"deck.csv", "deck.xlsx"})
-        self.assertTrue(callbacks["deck.csv"]().startswith(b"\xef\xbb\xbf"))
-        future = datetime.fromisoformat(self.observed_at) + timedelta(hours=12)
-        for build in callbacks.values():
-            with mock.patch.dict(build.__globals__, {"datetime": SimpleNamespace(now=lambda tz: future)}):
-                with self.assertRaisesRegex(ValueError, "만료"):
-                    build()
+        for stock in ('in_stock', 'out_of_stock', 'unknown'):
+            with self.subTest(stock=stock):
+                self.stock = stock
+                with mock.patch.object(DeltaGenerator, "download_button", capture):
+                    app = self.start()
+                    app.checkbox(key="confirmed").check().run()
+                self.assertEqual(set(callbacks), {"deck.csv", "deck.xlsx"})
+                self.assertTrue(callbacks["deck.csv"]().startswith(b"\xef\xbb\xbf"))
+                future = datetime.fromisoformat(self.observed_at) + timedelta(hours=12)
+                for build in callbacks.values():
+                    with mock.patch.dict(build.__globals__, {"datetime": SimpleNamespace(now=lambda tz: future)}):
+                        with self.assertRaisesRegex(ValueError, "만료"):
+                            build()
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
+import card_prices
 import deck_order
 import rarities
 
@@ -14,7 +15,8 @@ import rarities
 OPTIONAL_COLUMNS = {"name_ko": "한국어 이름", "name_ja": "일본어 이름", "name_en": "영어 이름", "cid": "공식 CID"}
 
 # Price columns appended after the optional columns when include_price is set. Each card then carries "price",
-# the card_prices.get_card_price result; amounts are filled only for status "ok", every other status leaves them blank.
+# the card_prices.get_card_price result; amounts and observed time are filled for card_prices.PRICED_STATUSES ("ok" in
+# stock, "out_of_stock" sold out, "stock_unknown" stock not verifiable), every other status leaves them blank.
 PRICE_HEADERS = ["단가(원)", "합계(원)", "가격 상태", "가격 상세", "가격 판본", "가격 수록 번호", "가격 상품 URL",
                  "가격 관찰 시각(KST)"]
 PRICE_FIELDS = {"status", "detail", "locale", "unit_price_krw", "card_number", "product_url", "observed_at"}
@@ -102,9 +104,9 @@ def price_values(card):
     if not isinstance(price, dict) or not PRICE_FIELDS <= set(price):
         raise ValueError(f"CID {card['cid']} 줄에 가격 정보가 없거나 올바르지 않습니다: {price!r}")
     unit = price["unit_price_krw"]
-    if price["status"] == "ok":
+    if price["status"] in card_prices.PRICED_STATUSES:
         if isinstance(unit, bool) or not isinstance(unit, int) or unit <= 0:
-            raise ValueError(f"CID {card['cid']} 가격 상태가 ok인데 단가가 올바르지 않습니다: {unit!r}")
+            raise ValueError(f"CID {card['cid']} 가격 상태가 {price['status']}인데 단가가 올바르지 않습니다: {unit!r}")
         if not isinstance(price["observed_at"], datetime) or price["observed_at"].tzinfo is None:
             raise ValueError(f"CID {card['cid']} 가격의 관찰 시각이 올바르지 않습니다: {price['observed_at']!r}")
         amounts = [unit, unit * validate_quantity(card["quantity"])]

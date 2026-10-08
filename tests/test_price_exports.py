@@ -13,13 +13,14 @@ PRICE_HEADERS = ["단가(원)", "합계(원)", "가격 상태", "가격 상세",
 
 def quote(status="ok"):
     observed = datetime(2026, 10, 8, 7, 19, 37, tzinfo=timezone.utc)
+    priced = status in ('ok', 'out_of_stock', 'stock_unknown')
     return {"status": status, "detail": "수집 상품 중 확인된 재고 최저가", "locale": "ja",
-            "unit_price_krw": 240 if status == "ok" else None,
-            "card_number": "15AY-JPB22" if status == "ok" else None,
-            "product_id": "39577" if status == "ok" else None,
-            "product_url": "http://www.tcgshop.co.kr/goods_detail.php?goodsIdx=39577" if status == "ok" else None,
-            "observed_at": observed if status == "ok" else None,
-            "expires_at": observed + timedelta(hours=12) if status == "ok" else None,
+            "unit_price_krw": 240 if priced else None,
+            "card_number": "15AY-JPB22" if priced else None,
+            "product_id": "39577" if priced else None,
+            "product_url": "http://www.tcgshop.co.kr/goods_detail.php?goodsIdx=39577" if priced else None,
+            "observed_at": observed if priced else None,
+            "expires_at": observed + timedelta(hours=12) if priced else None,
             "matched_products": 1, "in_stock_products": 1 if status == "ok" else 0,
             "excluded_unverified": 0}
 
@@ -44,7 +45,7 @@ class PriceExportTest(unittest.TestCase):
         self.assertEqual(sheet["D2"].data_type, "n")
 
     def test_nonprice_status_has_blank_amounts_and_preserves_reason(self):
-        for status in ("no_stock", "not_observed", "unverified", "expired", "config_error",
+        for status in ("not_observed", "unverified", "expired", "config_error",
                        "database_error", "cache_error", "data_error", "official_error"):
             with self.subTest(status=status):
                 q = {**quote(status), "detail": "=explicit reason"}
@@ -56,6 +57,27 @@ class PriceExportTest(unittest.TestCase):
                 self.assertIsNone(sheet["E2"].value)
                 self.assertEqual(sheet["G2"].value, "=explicit reason")
                 self.assertEqual(sheet["G2"].data_type, "s")
+
+    def test_sold_out_and_unknown_prices_are_numeric_and_keep_availability_in_both_formats(self):
+        for status, label in [('out_of_stock', '품절'), ('stock_unknown', '재고 확인 불가')]:
+            q = {**quote(status), 'detail': label}
+            cards = exports.aggregate([entry(2, q), entry(3, q)])
+            rows = list(csv.DictReader(io.StringIO(exports.to_csv_bytes(cards, include_price=True).decode('utf-8-sig'))))
+            self.assertEqual((rows[0]['단가(원)'], rows[0]['합계(원)'], rows[0]['가격 상태']), ('240', '1200', status))
+            self.assertEqual(rows[0]['가격 상세'], label)
+            self.assertEqual(rows[0]['가격 수록 번호'], '15AY-JPB22')
+            self.assertTrue(rows[0]['가격 관찰 시각(KST)'])
+            sheet = load_workbook(io.BytesIO(exports.to_xlsx_bytes(cards, include_price=True))).active
+            self.assertEqual((sheet['D2'].value, sheet['E2'].value, sheet['F2'].value), (240, 1200, status))
+            self.assertEqual(sheet['D2'].data_type, 'n')
+
+    def test_unavailable_stock_prices_still_require_valid_money_and_observation(self):
+        for status in ('out_of_stock', 'stock_unknown'):
+            for bad in ({'unit_price_krw': 0}, {'unit_price_krw': True}, {'unit_price_krw': 3.5},
+                        {'unit_price_krw': None}, {'observed_at': None}, {'observed_at': datetime(2026, 10, 8)}):
+                for writer in (exports.to_csv_bytes, exports.to_xlsx_bytes):
+                    with self.subTest(status=status, bad=bad, writer=writer.__name__), self.assertRaises(ValueError):
+                        writer([entry(price={**quote(status), **bad})], include_price=True)
 
     def test_aggregation_refuses_conflicting_prices_or_language(self):
         for changed in ({"unit_price_krw": 300}, {"locale": "ko"}, {"status": "expired", "unit_price_krw": None}):

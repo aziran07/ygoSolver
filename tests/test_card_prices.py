@@ -1,4 +1,4 @@
-"""Codex acceptance: bind official identity and choose only a fresh in-stock minimum."""
+"""Codex acceptance: exact fresh prices, with in-stock priority and explicit availability."""
 import sqlite3
 import tempfile
 import unittest
@@ -94,11 +94,35 @@ class MinimumPriceTest(unittest.TestCase):
             q = self.quote(prints=prints)
             self.assertEqual((q["unit_price_krw"], q["card_number"]), (180, "SD6-JP030"))
 
-    def test_no_stock_is_blank_not_zero_or_sold_out_price(self):
+    def test_sold_out_keeps_price_and_provenance_with_explicit_status(self):
         self.groups = {"15AY-JPB22": group("15AY-JPB22", [product(stock="out_of_stock")])}
         q = self.quote()
-        self.assertEqual(q["status"], "no_stock")
-        self.assertIsNone(q["unit_price_krw"])
+        self.assertEqual((q["status"], q["unit_price_krw"]), ("out_of_stock", 240))
+        self.assertEqual(q["product_id"], "39577")
+        self.assertEqual(q["card_number"], "15AY-JPB22")
+        self.assertIn("품절", q["detail"])
+        self.assertEqual(q["in_stock_products"], 0)
+        self.assertIsNotNone(q["observed_at"])
+        self.assertIsNotNone(q["expires_at"])
+
+    def test_no_in_stock_uses_lowest_listed_price_and_preserves_unknown_or_sold_out(self):
+        for stock, expected in [('unknown', 'stock_unknown'), ('out_of_stock', 'out_of_stock')]:
+            with self.subTest(stock=stock):
+                self.groups = {
+                    '15AY-JPB22': group('15AY-JPB22', [product('20', price=600, stock='out_of_stock')]),
+                    'SD6-JP030': group('SD6-JP030', [product('30', 'SD6-JP030', 350, stock=stock),
+                                                   product('31', 'SD6-JP030', 5, rarity='Mystery Rare')]),
+                }
+                q = self.quote()
+                self.assertEqual((q['status'], q['unit_price_krw'], q['product_id']), (expected, 350, '30'))
+                self.assertEqual(q['in_stock_products'], 0)
+
+    def test_unavailable_stock_does_not_allow_expired_or_error_prices(self):
+        self.groups = {'15AY-JPB22': group('15AY-JPB22', [product(stock='out_of_stock')]),
+                       'SD6-JP030': price_store.StalePriceError('expired other print')}
+        q = self.quote()
+        self.assertEqual(q['status'], 'expired')
+        self.assertIsNone(q['unit_price_krw'])
 
     def test_uncollected_and_unverified_are_distinct(self):
         self.groups = {}

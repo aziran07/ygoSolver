@@ -13,8 +13,9 @@ price_with_collection() adds on-demand collection for one selected rarity: only 
 or expired, it asks price_collector to fetch the search page of each missing card number in turn, stores it, reads
 it back from PostgreSQL/Redis and maps it with the same strict rules.
 
-The result covers the stored products only (listing snapshots and first search result pages): it is the lowest
-price among the observed in-stock products, not the lowest price of the whole market.
+The result covers the stored products only (listing snapshots and first search result pages), not the whole market.
+It is the lowest price among the observed in-stock products of the rarity; when none of them is in stock, it is the
+lowest price among all its observed products (sold out or stock unknown) and its status says so.
 """
 
 import re
@@ -52,11 +53,12 @@ SHOP_RARITY_LABELS = {
     "Prismatic Secret Rare": {36, 58},
 }
 
-# Status -> short Korean label shown in the app's price field; the result's "detail" explains it. Only "ok" carries
-# a price. Exports keep the status keys, not these labels.
+# Status -> short Korean label shown in the app's price field; the result's "detail" explains it. Only PRICED_STATUSES
+# carry a price. Exports keep the status keys, not these labels.
 STATUS_LABELS = {
     "ok": "수집 상품 최저가",
-    "no_stock": "품절·재고 불명",
+    "out_of_stock": "품절",
+    "stock_unknown": "재고 확인 불가",
     "not_observed": "가격 미수집",
     "unverified": "레어도 확인 불가",
     "no_edition_print": "이 판본에 없음",
@@ -70,6 +72,12 @@ STATUS_LABELS = {
     "not_listed": "상점 상품 없음",
     "collection_failed": "수집 실패",
 }
+
+
+# Statuses whose result carries the selected product's price, number, URL and observed / expiry times, by the
+# selected product's stock status. Every other status leaves them blank.
+PRICED_STATUSES = ("ok", "out_of_stock", "stock_unknown")
+STATUS_BY_STOCK = {"in_stock": "ok", "out_of_stock": "out_of_stock", "unknown": "stock_unknown"}
 
 
 class OfficialPrintError(Exception):
@@ -209,7 +217,10 @@ def queryable_numbers(official_prints, locale, rarity_keys):
 
 
 def card_price(rarity, locale, official_prints, observations, redact_urls=()):
-    """Lowest observed in-stock price of one rarity (a rarities.RARITIES key) of a card in edition locale.
+    """Lowest observed price of one rarity (a rarities.RARITIES key) of a card in edition locale.
+
+    The lowest in-stock product is selected when there is one (status "ok"); otherwise the lowest of all matched
+    products, whatever their stock (status "out_of_stock" or "stock_unknown" by the selected product's stock).
 
     official_prints is fetch_official_prints(cid, locale); observations is observe_card_numbers() for (at least)
     queryable_numbers(official_prints, locale, [rarity]). Price problems are returned as a status (see
@@ -267,19 +278,23 @@ def card_price(rarity, locale, official_prints, observations, redact_urls=()):
     counts = {"matched_products": len(matched), "excluded_unverified": unverified,
               "expires_at": min(expiries) if expiries else None}
     in_stock = [product for product in matched if product["stock_status"] == "in_stock"]
-    if in_stock:
-        best = min(in_stock, key=lambda p: (p["price_krw"], p["card_number"], int(p["product_id"])))
+    if matched:
+        candidates = in_stock or matched
+        best = min(candidates, key=lambda p: (p["price_krw"], p["card_number"], int(p["product_id"])))
+        status = STATUS_BY_STOCK[best["stock_status"]]
+        if in_stock:
+            chosen = f"재고 있음 {len(in_stock)}개의 최저가"
+        elif status == "out_of_stock":
+            chosen = "재고가 확인된 상품이 없어 수집 상품 최저가 — 이 상품은 품절입니다"
+        else:
+            chosen = "재고가 확인된 상품이 없어 수집 상품 최저가 — 이 상품은 재고 확인 불가(목록에 재고 표시 없음)입니다"
         return price_result(
-            "ok", locale,
-            f"관찰한 {edition} {label} 상품 {len(matched)}개 중 재고 있음 {len(in_stock)}개의 최저가"
+            status, locale,
+            f"관찰한 {edition} {label} 상품 {len(matched)}개 중 {chosen}"
             f" — 수집한 상품 기준이며 전체 시장 최저가가 아닙니다{note}",
             unit_price_krw=best["price_krw"], card_number=best["card_number"], product_id=best["product_id"],
             product_url=best["product_url"], observed_at=datetime.fromisoformat(best["observed_at"]),
             in_stock_products=len(in_stock), **counts)
-    if matched:
-        return price_result("no_stock", locale,
-                            f"관찰한 {edition} {label} 상품 {len(matched)}개가 모두 품절이거나 재고를 확인할 수 없습니다{note}",
-                            **counts)
     if unverified:
         return price_result("unverified", locale,
                             f"수록 번호 {', '.join(numbers)}에 관찰한 상품이 있지만 상점 레어도 표기가 {label}인지 "

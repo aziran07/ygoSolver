@@ -193,11 +193,12 @@ class DemandDecisionTest(unittest.TestCase):
         return card_prices.price_with_collection("N", "ja", prints, observations,
                                                  "postgresql://test", "redis://test", collect=collect)
 
-    def test_fresh_in_stock_or_no_stock_and_backend_errors_never_collect(self):
-        for stock, expected in [("in_stock", "ok"), ("out_of_stock", "no_stock")]:
+    def test_fresh_all_stock_states_and_backend_errors_never_collect(self):
+        for stock, expected in [("in_stock", "ok"), ("out_of_stock", "out_of_stock"), ("unknown", "stock_unknown")]:
             collector = mock.Mock()
             result = self.quote({NUMBER: {"observed": group(NUMBER, [product(stock=stock)])}}, collector)
             self.assertEqual(result["status"], expected)
+            self.assertEqual(result["unit_price_krw"], 240)
             collector.assert_not_called()
         for error, status in [(price_store.PriceDatabaseError("db"), "database_error"),
                               (price_store.PriceCacheError("cache"), "cache_error"),

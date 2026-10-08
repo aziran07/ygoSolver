@@ -148,8 +148,9 @@ def collect_price(card_number, locale, database_url, fetching, retry):
 
 
 def price_summary(result):
-    """Short value for the unit price field: the amount, or the status label when there is no price."""
-    if result["status"] == "ok":
+    """Short value for the unit price field: the amount (in stock, sold out or stock unknown), or the status label
+    when there is no price."""
+    if result["status"] in card_prices.PRICED_STATUSES:
         return f"{result['unit_price_krw']:,}원"
     return card_prices.STATUS_LABELS[result["status"]]
 
@@ -455,7 +456,7 @@ price_locale = PRICE_LOCALES[st.radio(
 st.info("가격은 서버 가격 DB에 저장된 TCGSHOP 상품을 먼저 읽습니다. 고른 레어도의 가격이 없거나 만료됐을 때만 바로 "
         "상점에서 그 카드 번호를 검색해 저장한 뒤 DB에서 다시 읽습니다. 수집이 실패하면 **수집 실패**와 오류를 표시하고, "
         "카드의 **가격 수집 다시 시도**를 누를 때까지 다시 요청하지 않습니다.")
-st.caption("검색 결과 첫 페이지만 수집하며, 검색 결과가 없으면 **상점 상품 없음**을 12시간 동안 표시합니다. 단가는 저장된 상품 중 재고 있음 상품의 최저가이며 전체 시장 최저가가 아닙니다. 공식 수록 번호·레어도가 "
+st.caption("검색 결과 첫 페이지만 수집하며, 검색 결과가 없으면 **상점 상품 없음**을 12시간 동안 표시합니다. 단가는 저장된 상품 중 재고 있음 상품의 최저가이고, 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품의 최저가를 그 표시와 함께 보여 줍니다. 전체 시장 최저가가 아닙니다. 공식 수록 번호·레어도가 "
            "정확히 일치하는 상품만 연결하고, 관찰 후 12시간이 지난 가격은 쓰지 않습니다. 사유·수록 번호·상품·시각은 카드별 가격 "
            "상세에 있습니다.")
 
@@ -598,9 +599,13 @@ for row in list(state.rows):
                 if row["rarity"] in options:
                     price = price_of(card["cid"], row["rarity"])
                     price_column.metric(f"단가 ({edition})", price_summary(price))
+                    if price["status"] in ("out_of_stock", "stock_unknown"):
+                        # The amount alone would read as a buyable price, so its availability is shown right below.
+                        price_column.caption(f"⚠️ **{card_prices.STATUS_LABELS[price['status']]}** — "
+                                             "재고가 확인된 상품이 없어 이 상품의 가격입니다")
                     with edit_column.expander(f"가격 상세 — {card_prices.STATUS_LABELS[price['status']]}"):
                         st.write(price["detail"])
-                        if price["status"] == "ok":
+                        if price["status"] in card_prices.PRICED_STATUSES:
                             st.write(f"수록 번호 {price['card_number']} · [상품 {price['product_id']}]({price['product_url']})")
                             st.write(f"관찰 {kst(price['observed_at'])} · 만료 {kst(price['expires_at'])}")
                     if price["status"] in ("collection_failed", "not_listed"):
@@ -634,7 +639,8 @@ for row in list(state.rows):
 # --- 4. Export ------------------------------------------------------------
 st.subheader("3. 내보내기")
 st.caption("기본 열은 카드명·레어도·수량이며, 고른 열과 가격 열(단가·합계·가격 상태·상세·판본·수록 번호·상품 URL·관찰 시각)이 "
-           "그 뒤에 붙습니다. 가격을 확인할 수 없는 줄은 금액을 비우고 가격 상태에 이유를 적습니다. 카드는 메인 덱 몬스터 → 마법 → 함정 → "
+           "그 뒤에 붙습니다. 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품의 최저가를 쓰고 가격 상태와 가격 상세에 "
+           "표시합니다. 가격을 확인할 수 없는 줄은 금액을 비우고 가격 상태에 이유를 적습니다. 카드는 메인 덱 몬스터 → 마법 → 함정 → "
            "엑스트라 덱 몬스터 순으로 정렬되고, 같은 카드의 레어도는 낮은 것부터 이어집니다.")
 EXPORT_OPTION_LABELS = {"name_ko": "한국어 카드명", "name_ja": "일본어 카드명", "name_en": "영어 카드명", "cid": "CID"}
 optional_fields = []
@@ -684,8 +690,8 @@ confirmed = st.checkbox("모든 카드의 이름·수량·레어도를 직접 �
 ready = bool(cards) and confirmed
 # The confirmed prices are valid only until the first of them expires; a later click fails instead of
 # downloading a price that is no longer current (the following rerun shows the expired status).
-price_valid_until = min((card["price"]["expires_at"] for card in cards if card["price"]["status"] == "ok"),
-                        default=None)
+price_valid_until = min((card["price"]["expires_at"] for card in cards
+                         if card["price"]["status"] in card_prices.PRICED_STATUSES), default=None)
 
 
 def confirmed_export(to_bytes, confirmed_cards, fields, valid_until):
