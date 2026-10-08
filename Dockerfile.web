@@ -11,7 +11,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && groupadd --gid 1000 app \
     && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin app
-COPY app.py catalog.py deck_order.py exports.py rarities.py recognition.py references.py ./
+COPY app.py card_prices.py catalog.py deck_order.py exports.py price_store.py prices.py rarities.py \
+     recognition.py references.py ./
 COPY .streamlit/config.toml .streamlit/config.toml
 COPY THIRD_PARTY_NOTICES.md ./
 COPY LICENSES/ LICENSES/

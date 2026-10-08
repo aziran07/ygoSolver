@@ -1,4 +1,5 @@
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +48,9 @@ def download_buttons_disabled(app):
 
 class AppTestCase(unittest.TestCase):
     def setUp(self):
+        environment = mock.patch.dict(os.environ, {"DATABASE_URL": "", "REDIS_URL": ""})
+        environment.start()
+        self.addCleanup(environment.stop)
         sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
         sort_patch.start()
         self.addCleanup(sort_patch.stop)

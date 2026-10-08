@@ -94,6 +94,14 @@ class StalePriceError(PriceError):
     pass
 
 
+class PriceDatabaseError(PriceError):
+    """PostgreSQL could not be reached or a statement failed."""
+
+
+class PriceCacheError(PriceError):
+    """Redis could not be reached or a command failed."""
+
+
 def redact(text, *urls):
     """Remove passwords contained in the given connection URLs from text."""
     for url in urls:
@@ -109,7 +117,7 @@ def connect_postgres(database_url):
         parameters.setdefault("connect_timeout", 5)
         return psycopg.connect(**parameters)
     except psycopg.Error as error:
-        raise PriceError(f"PostgreSQL connection failed: {redact(str(error), database_url)}") from error
+        raise PriceDatabaseError(f"PostgreSQL connection failed: {redact(str(error), database_url)}") from error
 
 
 def init_db(database_url):
@@ -346,9 +354,9 @@ def get_prices(card_number, locale, database_url, redis_url):
                     cache.set(key, json.dumps(entry, ensure_ascii=False), pxat=expires_ms)
                     cache_status = "miss"
     except psycopg.Error as error:
-        raise PriceError(f"PostgreSQL price query failed: {redact(str(error), database_url)}") from error
+        raise PriceDatabaseError(f"PostgreSQL price query failed: {redact(str(error), database_url)}") from error
     except redis.RedisError as error:
-        raise PriceError(f"Redis cache failed: {redact(str(error), redis_url)}") from error
+        raise PriceCacheError(f"Redis cache failed: {redact(str(error), redis_url)}") from error
     finally:
         connection.close()
     return {

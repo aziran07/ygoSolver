@@ -2,7 +2,8 @@
 # Neither database publishes a host port; only services on this project's
 # network can reach them. The price CLI runs on demand (profile "tools").
 # The web app (Streamlit) publishes WEB_BIND_IP:WEB_PORT for LAN access and
-# does not use the price databases.
+# reads stored prices from PostgreSQL/Redis (it never imports or crawls). It
+# does not wait for them: if they are down, the app shows price error statuses.
 name: ygosolver
 
 x-logging: &logging
@@ -69,6 +70,9 @@ services:
     restart: unless-stopped
     ports:
       - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8501}:8501"
+    environment:
+      DATABASE_URL: postgresql://ygosolver:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/ygosolver
+      REDIS_URL: redis://redis:6379/0
     # Only the runtime data the app reads; host dirs must exist (owned by
     # UID/GID 1000) so a missing provisioning step fails instead of Docker
     # creating empty root-owned directories.

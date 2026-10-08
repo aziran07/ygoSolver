@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -25,7 +26,9 @@ def main():
     assert not Path(".env").exists()
     assert not Path(".git").exists()
     assert not Path("userDataset").exists()
-    assert "DATABASE_URL" not in os.environ and "POSTGRES_PASSWORD" not in os.environ
+    assert "POSTGRES_PASSWORD" not in os.environ
+    assert urlsplit(os.environ["DATABASE_URL"]).hostname == "postgres"
+    assert urlsplit(os.environ["REDIS_URL"]).hostname == "redis"
 
     for directory in ("data/models", "data/references", "data/official_cards"):
         try:
