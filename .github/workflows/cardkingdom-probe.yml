@@ -1,0 +1,107 @@
+name: cardkingdom-probe
+
+on:
+  push:
+    branches: [feature/card-prices]
+    paths:
+      - tests/acceptance_cardkingdom_container.py
+      - tools/cardkingdom_probe/Dockerfile
+      - tools/cardkingdom_probe/seccomp_profile.json
+      - .github/workflows/cardkingdom-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    env:
+      IMAGE: cardkingdom-probe:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare evidence folders
+        run: |
+          mkdir -p probe-output/run1 probe-output/run2
+          # Ephemeral runner dir; lets the container's non-root pwuser write evidence.
+          chmod -R 0777 probe-output
+
+      - name: Build image from a context holding only the test
+        id: build
+        run: |
+          mkdir build-context
+          cp tests/acceptance_cardkingdom_container.py build-context/
+          docker build --pull -t "$IMAGE" -f tools/cardkingdom_probe/Dockerfile build-context
+
+      - name: Probe in fresh container 1
+        run: |
+          docker run --rm --init --shm-size=1g --user pwuser \
+            --security-opt seccomp=tools/cardkingdom_probe/seccomp_profile.json \
+            -v "$PWD/probe-output/run1:/evidence" "$IMAGE"
+
+      - name: Probe in fresh container 2 (cold-start reproducibility, only after run 1 succeeded)
+        run: |
+          docker run --rm --init --shm-size=1g --user pwuser \
+            --security-opt seccomp=tools/cardkingdom_probe/seccomp_profile.json \
+            -v "$PWD/probe-output/run2:/evidence" "$IMAGE"
+
+      - name: Record runtime and image metadata
+        if: always()
+        shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          set -euo pipefail
+          # Each value is a top-level assignment so a failing command fails this step.
+          os_description=$(lsb_release -ds)
+          kernel=$(uname -r)
+          docker_version=$(docker version --format '{{.Server.Version}}')
+          base_image=$(grep '^FROM' tools/cardkingdom_probe/Dockerfile)
+          seccomp_sha256=$(sha256sum tools/cardkingdom_probe/seccomp_profile.json | cut -d' ' -f1)
+          if [ "$BUILD_OUTCOME" = "success" ]; then
+            image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE")
+            playwright_version=$(docker run --rm --entrypoint pip "$IMAGE" show playwright | grep '^Version: ')
+          else
+            image_id="image not built (build step outcome: $BUILD_OUTCOME)"
+            playwright_version="image not built (build step outcome: $BUILD_OUTCOME)"
+          fi
+          cat > probe-output/metadata.txt <<EOF
+          commit: $GITHUB_SHA
+          runner: $RUNNER_OS $os_description $kernel
+          docker: $docker_version
+          build_outcome: $BUILD_OUTCOME
+          image_id: $image_id
+          base_image: $base_image
+          playwright: $playwright_version
+          seccomp_sha256: $seccomp_sha256
+          EOF
+          cat probe-output/metadata.txt
+
+      - name: Reject forbidden evidence files
+        if: always()
+        run: |
+          forbidden=$(find probe-output -type f \( -iname '*.har' -o -iname '*.zip' -o -iname '*.js' -o -iname '*cookie*' -o -iname '*token*' -o -iname '*storage*' \))
+          if [ -n "$forbidden" ]; then
+            echo "Forbidden files in evidence (excluded from upload):"
+            echo "$forbidden"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: cardkingdom-probe-evidence
+          path: |
+            probe-output
+            !probe-output/**/*.har
+            !probe-output/**/*.zip
+            !probe-output/**/*.js
+            !probe-output/**/*cookie*
+            !probe-output/**/*token*
+            !probe-output/**/*storage*
+          retention-days: 3
+          if-no-files-found: error
