@@ -14,14 +14,14 @@ Arguments after the image name are passed to the test, e.g.
 `documents[].request_headers` and the response `Retry-After` in
 `documents[].retry_after`.
 
-## Experimental header comparison (results pending)
+## Experimental header comparison (2026-10-08)
 
 After the first run's HTTP 429, the workflow compares two conditions:
 
-| Run | Profile | Meaning |
-|---|---|---|
-| `run1` | `baseline` | The test's original request headers, unchanged |
-| `run2` | `chrome-headers` | Chrome-like public HTTP request headers |
+| Run | Profile | Meaning | Observed result |
+|---|---|---|---|
+| `run1` | `baseline` | The test's original request headers, unchanged | HTTP 429 at shop home |
+| `run2` | `chrome-headers` | Chrome-like public HTTP request headers | HTTP 429 at shop home |
 
 The Chrome-like profile changes only public HTTP client metadata. It does not
 reproduce Chrome's TLS fingerprint or full browser identity, and no actual
@@ -30,8 +30,29 @@ rotation and no retry loop. Source identity checks and app-level validation stay
 strict in both conditions. The local command below is unchanged and runs the
 baseline condition.
 
-The 429 below is historical evidence from the first run; results of this
-comparison are still pending.
+[Actions run 37734622874](https://github.com/aziran07/ygoSolver/actions/runs/37734622874)
+tested commit `6c36a5543ebe5a83eedcd3ceed9e6dfb4120c4d8` at 05:53–05:54 UTC.
+Both cases used the same runner/image and started with zero cookies. The second
+container started 30.34 seconds after the first finished. Both loaded the
+network-smoke page with HTTP 200, then failed on the Cardkingdom home with HTTP
+429 and no `Retry-After`. Neither reached search or product validation.
+
+The recorded outgoing headers confirm these differences:
+
+- `User-Agent`: `HeadlessChrome/153.0.8010.12` became `Chrome/153.0.0.0`.
+- `Accept-Language`: absent in the baseline, then
+  `ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7`.
+- `Sec-CH-UA`: the HeadlessChrome brand was replaced with Google Chrome; the
+  constructed brand list was verified against the actual outgoing request.
+- Both cases already sent the browser's native `Accept`, `Accept-Encoding`,
+  `Sec-Fetch-*`, `Upgrade-Insecure-Requests`, Linux platform and desktop hints.
+
+All five configured header values were verified before interpreting the HTTP
+response. Reports and screenshots independently confirm that this particular
+public-header combination did not resolve the 429. This does not identify the
+blocking mechanism or rule out every possible header-related cause. The job
+retains both failed steps; a successful evidence upload is not a successful
+price lookup. The initial single-container run is recorded below separately.
 
 ## Observed result (2026-10-08)
 
