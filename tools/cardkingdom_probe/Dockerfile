@@ -6,10 +6,17 @@ FROM mcr.microsoft.com/playwright/python:v1.63.0-noble@sha256:72bd171a9ffc2b4b59
 # Python package for the system interpreter.
 RUN pip install --no-cache-dir playwright==1.63.0
 
+# Headed Chromium needs a virtual display. The base image's xvfb package
+# depends on xauth; fail the build if either is missing.
+RUN command -v xvfb-run && command -v xauth
+
 COPY acceptance_cardkingdom_container.py /probe/acceptance_cardkingdom_container.py
 
 # Non-root so Chromium keeps its sandbox (run with seccomp_profile.json).
 USER pwuser
 WORKDIR /home/pwuser
 
-ENTRYPOINT ["python", "/probe/acceptance_cardkingdom_container.py", "--output", "/evidence"]
+# xvfb-run returns the test's exit status. Arguments after the image name
+# replace CMD and are forwarded to the test.
+ENTRYPOINT ["xvfb-run", "-a", "python", "/probe/acceptance_cardkingdom_container.py", "--output", "/evidence"]
+CMD ["--flow", "headed-naver-product"]

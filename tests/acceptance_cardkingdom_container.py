@@ -1,4 +1,4 @@
-"""Opt-in live test: fresh Linux Chromium, shop search, and two known products.
+"""Opt-in live test: fresh Linux Chromium with an explicit navigation flow.
 
 Never runs during unittest discovery. Prices/stock are observations from
 2026-10-08; a changed listing fails for review instead of inventing a price.
@@ -14,6 +14,7 @@ from pathlib import Path
 import platform
 import re
 import sys
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -136,20 +137,53 @@ def verify_product(page, expected, output):
     }
 
 
+def verify_naver_product(page, context, report, output):
+    """One Naver previsit and one product visit, without retry or search."""
+    report["phase"] = "naver_previsit"
+    response = page.goto("https://www.naver.com/", wait_until="load")
+    require(response is not None, "Naver navigation returned no response")
+    check_access(page, response, report)
+    require(response.status == 200, f"Naver returned HTTP {response.status}")
+    require(public_url(page.url) == "https://www.naver.com/", "Unexpected Naver destination")
+    cookies = context.cookies()
+    report["naver_previsit"] = {
+        "url": public_url(page.url),
+        "status": response.status,
+        "wait_until": "load",
+        "cookie_count": len(cookies),
+        "nnb_present": any(cookie["name"] == "NNB" for cookie in cookies),
+    }
+    report["phase"] = "in_stock_product"
+    response = page.goto(SHOP + "/products/" + PRODUCTS[0]["id"], wait_until="load")
+    require(response is not None, "Product navigation returned no response")
+    check_access(page, response, report)
+    require(response.status == 200, f"Product returned HTTP {response.status}")
+    report["products"].append(verify_product(page, PRODUCTS[0], output))
+    check_access(page, None, report)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--header-profile", choices=("baseline", "chrome-headers"),
                         default="baseline")
+    parser.add_argument("--flow", choices=("shop-search", "headed-naver-product"),
+                        default="shop-search")
     args = parser.parse_args()
+    headed = args.flow == "headed-naver-product"
+    if headed and args.header_profile != "baseline":
+        parser.error("headed-naver-product requires unmodified baseline headers")
     if args.output.exists() and any(args.output.iterdir()):
         parser.error("The evidence directory must be empty; preserve earlier runs separately")
     args.output.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
     report = {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "failed",
         "phase": "environment",
         "header_profile": args.header_profile,
+        "flow": args.flow,
+        "scope": "one known in-stock product" if headed else "shop search and two products",
         "environment": {
             "system": platform.system(),
             "kernel": platform.release(),
@@ -157,6 +191,8 @@ def main():
             "python": platform.python_version(),
             "docker_marker": Path("/.dockerenv").is_file(),
             "uid": os.getuid() if hasattr(os, "getuid") else None,
+            "headless": not headed,
+            "display_present": bool(os.environ.get("DISPLAY")),
         },
         "http_errors": [],
         "documents": [],
@@ -168,6 +204,8 @@ def main():
         require(report["environment"]["system"] == "Linux", "Requires actual Linux")
         require(report["environment"]["docker_marker"], "Requires an actual Docker container")
         require(report["environment"]["uid"] not in (None, 0), "Requires a non-root user")
+        if headed:
+            require(report["environment"]["display_present"], "Headed flow requires an X display")
         from playwright.sync_api import sync_playwright, expect
 
         report["environment"]["playwright"] = version("playwright")
@@ -175,7 +213,7 @@ def main():
         with sync_playwright() as playwright:
             try:
                 report["phase"] = "browser_launch"
-                browser = playwright.chromium.launch(headless=True, chromium_sandbox=True)
+                browser = playwright.chromium.launch(headless=not headed, chromium_sandbox=True)
                 report["environment"]["chromium"] = browser.version
                 report["environment"]["sandbox_requested"] = True
                 options = {"viewport": {"width": 1280, "height": 1000}}
@@ -188,12 +226,15 @@ def main():
                         if name != "user-agent"
                     }
                 report["configured_headers"] = configured_headers
+                report["phase"] = "browser_context"
                 context = browser.new_context(**options)
                 report["initial_cookie_count"] = len(context.cookies())
                 require(report["initial_cookie_count"] == 0, "Browser context is not fresh")
+                report["phase"] = "browser_page"
                 page = context.new_page()
                 page.set_default_timeout(20000)
                 page.set_default_navigation_timeout(30000)
+                report["environment"]["navigator_webdriver"] = page.evaluate("navigator.webdriver")
 
                 def record_response(response):
                     request = response.request
@@ -209,42 +250,45 @@ def main():
                         report["http_errors"].append(record)
 
                 page.on("response", record_response)
-                report["phase"] = "browser_network_smoke"
-                response = page.goto("https://example.com", wait_until="domcontentloaded")
-                require(response is not None and response.status == 200, "Network smoke failed")
-                expect(page).to_have_title("Example Domain")
-                report["network_smoke_passed"] = True
+                if headed:
+                    verify_naver_product(page, context, report, args.output)
+                else:
+                    report["phase"] = "browser_network_smoke"
+                    response = page.goto("https://example.com", wait_until="domcontentloaded")
+                    require(response is not None and response.status == 200, "Network smoke failed")
+                    expect(page).to_have_title("Example Domain")
+                    report["network_smoke_passed"] = True
 
-                report["phase"] = "shop_home"
-                response = page.goto(SHOP, wait_until="domcontentloaded")
-                require(response is not None, "Shop navigation returned no response")
-                sent_headers = response.request.all_headers()
-                report["configured_headers_verified"] = all(
-                    sent_headers.get(name) == value for name, value in configured_headers.items()
-                )
-                require(report["configured_headers_verified"],
-                        "Configured HTTP headers were not sent as intended")
-                check_access(page, response, report)
-                page.get_by_role("button", name="검색어를 입력해주세요", exact=True).click()
-                report["phase"] = "shop_search"
-                page.get_by_role("textbox", name="검색어 입력", exact=True).fill("RC03-KR007")
-                page.get_by_role("button", name="검색하기", exact=True).click()
-                target = page.get_by_role("link", name=PRODUCTS[0]["title"], exact=True)
-                expect(target).to_be_visible()
-                check_access(page, None, report)
-                save_page(page, args.output, "search")
-                report["search"] = {"query": "RC03-KR007", "expected_product_visible": True}
+                    report["phase"] = "shop_home"
+                    response = page.goto(SHOP, wait_until="domcontentloaded")
+                    require(response is not None, "Shop navigation returned no response")
+                    sent_headers = response.request.all_headers()
+                    report["configured_headers_verified"] = all(
+                        sent_headers.get(name) == value for name, value in configured_headers.items()
+                    )
+                    require(report["configured_headers_verified"],
+                            "Configured HTTP headers were not sent as intended")
+                    check_access(page, response, report)
+                    page.get_by_role("button", name="검색어를 입력해주세요", exact=True).click()
+                    report["phase"] = "shop_search"
+                    page.get_by_role("textbox", name="검색어 입력", exact=True).fill("RC03-KR007")
+                    page.get_by_role("button", name="검색하기", exact=True).click()
+                    target = page.get_by_role("link", name=PRODUCTS[0]["title"], exact=True)
+                    expect(target).to_be_visible()
+                    check_access(page, None, report)
+                    save_page(page, args.output, "search")
+                    report["search"] = {"query": "RC03-KR007", "expected_product_visible": True}
 
-                report["phase"] = "in_stock_product"
-                target.click()
-                report["products"].append(verify_product(page, PRODUCTS[0], args.output))
-                check_access(page, None, report)
-                report["phase"] = "sold_out_product"
-                response = page.goto(SHOP + "/products/" + PRODUCTS[1]["id"],
-                                     wait_until="domcontentloaded")
-                check_access(page, response, report)
-                report["products"].append(verify_product(page, PRODUCTS[1], args.output))
-                check_access(page, None, report)
+                    report["phase"] = "in_stock_product"
+                    target.click()
+                    report["products"].append(verify_product(page, PRODUCTS[0], args.output))
+                    check_access(page, None, report)
+                    report["phase"] = "sold_out_product"
+                    response = page.goto(SHOP + "/products/" + PRODUCTS[1]["id"],
+                                         wait_until="domcontentloaded")
+                    check_access(page, response, report)
+                    report["products"].append(verify_product(page, PRODUCTS[1], args.output))
+                    check_access(page, None, report)
                 report["status"] = "passed"
                 report["phase"] = "complete"
             except Exception:
@@ -263,6 +307,14 @@ def main():
         report["status"] = "failed"
         report["error"] = {"type": type(error).__name__, "message": str(error)}
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
+    report["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    memory_peak = Path("/sys/fs/cgroup/memory.peak")
+    if memory_peak.is_file():
+        try:
+            report["cgroup_memory_peak_bytes"] = int(memory_peak.read_text().strip())
+        except (OSError, ValueError) as error:
+            report["status"] = "failed"
+            report["metrics_error"] = str(error)
     (args.output / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))

@@ -26,7 +26,7 @@ jobs:
 
       - name: Prepare evidence folders
         run: |
-          mkdir -p probe-output/run1 probe-output/run2
+          mkdir -p probe-output/run1
           # Ephemeral runner dir; lets the container's non-root pwuser write evidence.
           chmod -R 0777 probe-output
 
@@ -37,38 +37,11 @@ jobs:
           cp tests/acceptance_cardkingdom_container.py build-context/
           docker build --pull -t "$IMAGE" -f tools/cardkingdom_probe/Dockerfile build-context
 
-      - name: "Probe run1: baseline headers (fresh container)"
-        id: baseline
+      - name: "Probe run1: headed Chromium under Xvfb, naver.com then one product (fresh container)"
         run: |
-          docker run --rm --init --shm-size=1g --user pwuser             --security-opt seccomp=tools/cardkingdom_probe/seccomp_profile.json             -v "$PWD/probe-output/run1:/evidence" "$IMAGE" --header-profile baseline
-
-      # Controlled comparison requested by the user: runs even when baseline failed,
-      # but never after an infrastructure failure or a server Retry-After. Exactly once.
-      - name: "Probe run2: chrome-headers (fresh container, 30 s after baseline)"
-        id: chrome_headers
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -I - probe-output/run1/report.json <<'PY'
-          import json, sys
-          path = sys.argv[1]
-          try:
-              with open(path, encoding="utf-8") as handle:
-                  report = json.load(handle)
-          except (OSError, ValueError) as error:
-              sys.exit(f"chrome-headers not run: baseline produced no valid {path} ({error})")
-          if not isinstance(report, dict) or not isinstance(report.get("environment"), dict):
-              sys.exit("chrome-headers not run: baseline report lacks environment data")
-          if report.get("network_smoke_passed") is not True:
-              sys.exit("chrome-headers not run: baseline network smoke did not pass (infrastructure failure)")
-          retry_after = [doc.get("retry_after") for doc in report.get("documents", []) if doc.get("retry_after")]
-          if retry_after:
-              sys.exit(f"chrome-headers not run: server requested waiting (Retry-After {retry_after})")
-          print(f"baseline status: {report.get('status')}, phase: {report.get('phase')}")
-          PY
-          sleep 30
-          docker run --rm --init --shm-size=1g --user pwuser             --security-opt seccomp=tools/cardkingdom_probe/seccomp_profile.json             -v "$PWD/probe-output/run2:/evidence" "$IMAGE" --header-profile chrome-headers
+          docker run --rm --init --shm-size=1g --cpus 1 --memory 2g --user pwuser \
+            --security-opt seccomp=tools/cardkingdom_probe/seccomp_profile.json \
+            -v "$PWD/probe-output/run1:/evidence" "$IMAGE" --flow headed-naver-product
 
       - name: Record runtime and image metadata
         if: always()
@@ -92,8 +65,8 @@ jobs:
           fi
           cat > probe-output/metadata.txt <<EOF
           commit: $GITHUB_SHA
-          run1: baseline headers
-          run2: chrome-headers
+          run1_flow: headed-naver-product (xvfb-run -a, headless=False)
+          run1_limits: --cpus 1 --memory 2g --shm-size=1g --init --user pwuser
           runner: $RUNNER_OS $os_description $kernel
           docker: $docker_version
           build_outcome: $BUILD_OUTCOME

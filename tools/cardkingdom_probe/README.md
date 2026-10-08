@@ -1,22 +1,50 @@
 # Cardkingdom clean-container probe
 
 Runs the Codex-owned acceptance test `tests/acceptance_cardkingdom_container.py`
-in a fresh Linux container: headless Chromium with its sandbox enabled, no
-browser profile, cookies, tokens, proxies or stealth. The image holds only that
-test file — no datasets, app code or credentials.
+in a fresh Linux container. The image holds only that test file — no datasets,
+app code or credentials — and runs it under `xvfb-run -a`, so Chromium can use a
+normal headed window on a virtual display.
 
-Test contract: `python /probe/acceptance_cardkingdom_container.py --output /evidence`
-writes `report.json` plus rendered text/screenshots, exits 0 only when the
-browser search and both product checks succeed, nonzero otherwise.
-Arguments after the image name are passed to the test, e.g.
-`--header-profile baseline` or `--header-profile chrome-headers`. Each
-`report.json` records only allowlisted outgoing public header values in
-`documents[].request_headers` and the response `Retry-After` in
-`documents[].retry_after`.
+## Current flow: `--flow headed-naver-product`
 
-## Experimental header comparison (2026-10-08)
+The image's default command is `--flow headed-naver-product`; the workflow and
+the local instructions pass it explicitly. In this flow the test uses:
 
-After the first run's HTTP 429, the workflow compares two conditions:
+- headed Chromium (`headless=False`) under Xvfb, with its sandbox enabled
+  (`chromium_sandbox=True`) and the browser's unmodified request headers;
+- one fresh browser context with no profile, imported cookies, proxy or stealth;
+- one load of `https://www.naver.com`, then exactly one navigation to
+  `https://smartstore.naver.com/cardkingdom/products/4960632716` (waiting for
+  `load`), followed by the test's existing strict product checks.
+
+Test contract: `python /probe/acceptance_cardkingdom_container.py --output /evidence --flow headed-naver-product`
+writes `report.json` plus rendered text/screenshots and exits 0 only when that
+product check succeeds, nonzero otherwise. `xvfb-run` returns the test's exit
+status. Arguments after the image name replace the default command and are
+passed to the test.
+
+The report records the browser/OS versions, initial cookie count,
+`navigator.webdriver`, NNB presence after the previsit (no cookie values),
+document statuses and public headers, elapsed time, and cgroup peak memory when
+the kernel exposes it. A pass covers this one known in-stock listing; shop
+search, sold-out listings, repeatability and AWS are outside this run's scope.
+
+Why this flow: on 2026-10-08 a local check from a home IP (recorded in
+`HANDOFF.md`) found that direct product requests returned HTTP 429 in every
+browser mode, while a headed Chromium window that first opened naver.com
+received HTTP 200 and the product JSON-LD. Whether the same flow passes from a
+GitHub-hosted runner or from AWS is **not yet verified**; no result for this flow
+has been recorded here.
+
+## Historical results (earlier flows, no longer run)
+
+The two sections below record earlier headless runs. They describe the old
+flows (`--header-profile baseline` / `chrome-headers`, home → search → two
+products), not the current workflow.
+
+### Experimental header comparison (2026-10-08)
+
+After the first run's HTTP 429, the workflow then compared two conditions:
 
 | Run | Profile | Meaning | Observed result |
 |---|---|---|---|
@@ -27,8 +55,7 @@ The Chrome-like profile changes only public HTTP client metadata. It does not
 reproduce Chrome's TLS fingerprint or full browser identity, and no actual
 Windows Chrome profile, cookies or session were copied. There is no User-Agent
 rotation and no retry loop. Source identity checks and app-level validation stay
-strict in both conditions. The local command below is unchanged and runs the
-baseline condition.
+strict in both conditions.
 
 [Actions run 37734622874](https://github.com/aziran07/ygoSolver/actions/runs/37734622874)
 tested commit `6c36a5543ebe5a83eedcd3ceed9e6dfb4120c4d8` at 05:53–05:54 UTC.
@@ -54,7 +81,7 @@ blocking mechanism or rule out every possible header-related cause. The job
 retains both failed steps; a successful evidence upload is not a successful
 price lookup. The initial single-container run is recorded below separately.
 
-## Observed result (2026-10-08)
+### First single-container run (2026-10-08)
 
 [Actions run 37733371611](https://github.com/aziran07/ygoSolver/actions/runs/37733371611)
 tested commit `9bad15bb5a57cdeb96c9d607e63ef36ef5992f70` at 05:38 UTC.
@@ -91,9 +118,9 @@ mkdir -p "$work/build-context" "$work/probe-output/run1"
 cp tests/acceptance_cardkingdom_container.py "$work/build-context/"
 docker build --pull -t cardkingdom-probe -f tools/cardkingdom_probe/Dockerfile "$work/build-context"
 chmod 0777 "$work/probe-output/run1"
-docker run --rm --init --shm-size=1g --user pwuser \
+docker run --rm --init --shm-size=1g --cpus 1 --memory 2g --user pwuser \
   --security-opt seccomp=tools/cardkingdom_probe/seccomp_profile.json \
-  -v "$PWD/$work/probe-output/run1:/evidence" cardkingdom-probe
+  -v "$PWD/$work/probe-output/run1:/evidence" cardkingdom-probe --flow headed-naver-product
 echo "exit: $?"
 ```
 
@@ -106,7 +133,8 @@ Sandbox constraints: the container runs as non-root `pwuser`; Chromium's
 sandbox is allowed by the official seccomp profile (it permits the namespace
 syscalls the sandbox needs). Never run with `--privileged`,
 `--cap-add=SYS_ADMIN`, `--no-sandbox` or `seccomp=unconfined`. `--init` reaps
-browser zombie processes; `--shm-size=1g` avoids Chromium crashes from the 64 MB
+browser and Xvfb zombie processes; `--cpus 1 --memory 2g` fix the resource
+limits so runs are comparable; `--shm-size=1g` avoids Chromium crashes from the 64 MB
 default `/dev/shm`. No `-e`/`--env-file` is passed, so no host secrets reach the
 container. On Ubuntu 24.04+ hosts, AppArmor may block unprivileged user
 namespaces and therefore the sandbox; that is a host failure to report, not a
@@ -118,18 +146,13 @@ reason to disable the sandbox.
 touching the test, `Dockerfile`, `seccomp_profile.json` or the workflow, or
 manually via `workflow_dispatch` (no schedule or pull-request trigger).
 README-only changes do not trigger a store probe. It builds the image once, then
-on the same runner runs two sequential fresh containers from that image:
-`run1` with `--header-profile baseline`, then `run2` with
-`--header-profile chrome-headers`. `run2` runs even if `run1` failed (unless the
-job was cancelled or the build failed), but only once and only when
-`run1/report.json` is valid, records environment data and
-`network_smoke_passed: true`, and no document has a `Retry-After`. If the server
-sent `Retry-After`, `run2` is not run and its step fails; no delay is improvised.
-Otherwise `run2` starts 30 seconds after `run1`. Any probe or gate failure fails
-the job, so a `run2` success cannot hide a `run1` failure. The `probe-output` folder
-(`run1/`, `run2/`, `metadata.txt`) is always uploaded as artifact
-`cardkingdom-probe-evidence` (3-day retention); HAR, zip/trace, `.js`,
-cookie/token/storage files are rejected (job fails) and excluded from upload.
+runs exactly one fresh container (`run1`, `--flow headed-naver-product`,
+`--cpus 1 --memory 2g`). There is no second run, retry or `continue-on-error`;
+a probe failure fails the job. The `probe-output` folder (`run1/`,
+`metadata.txt`, which records the flow and resource limits) is always uploaded
+as artifact `cardkingdom-probe-evidence` (3-day retention); HAR, zip/trace,
+`.js`, cookie/token/storage files are rejected (job fails) and excluded from
+upload.
 
 Download evidence:
 
@@ -140,7 +163,8 @@ gh run download <run-id> -n cardkingdom-probe-evidence -D evidence
 
 ## What this does not prove
 
-The GitHub-hosted runner's network is not AWS. Success there shows the flow works in a clean headless Linux container; it does
+The GitHub-hosted runner's network is not AWS. Success there would show the flow
+works in a clean Linux container with headed Chromium under Xvfb; it does
 not show the store accepts requests from an AWS region/IP range, from Korean or
 other specific egress, at production frequency, or over time. Store responses
 (e.g. HTTP 429 or a login redirect) can depend on source IP reputation, so AWS
