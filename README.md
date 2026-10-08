@@ -209,6 +209,106 @@ DRAW2가 잘라낸 카드 사진을 이 PC에 등록해 둔 **공식 카드 DB �
 - 범위와 요청 간격: 현재 데이터는 일본판 목록 **한 페이지**(56개 상품, 2026-10-08 07:19 UTC)이며 전체 상품 목록이 아닙니다.
   TCGSHOP `robots.txt`는 전체 사이트에 `Crawl-delay: 43200`(요청 사이 12시간)을 명시하므로, 이후 수집도 사이트 전체 기준 12시간에 한 번 이하로 요청해야 합니다.
 
+### 가격 DB 서버 (PostgreSQL + Redis, `price_store.py`)
+
+같은 TCGSHOP 응답 원본을 서버의 PostgreSQL에 가격 이력으로 저장하고, 카드 번호별 조회 결과를 Redis에 최대 12시간 캐시합니다.
+검증은 위 `prices.py`의 `load_snapshot`/`parse_tcgshop_list`를 그대로 씁니다. 상점에 접속하지 않고, 자동 수집 일정·작업 큐·앱 화면 연동은 없습니다.
+공식 카드 SQLite는 그대로이며 이 DB와 연결하지 않습니다(CID·이름 매핑을 추측하지 않음).
+
+구성(`compose.yaml`, 프로젝트 이름 `ygosolver`):
+
+- `postgres`: `postgres:17-bookworm`, 볼륨 `ygosolver_postgres-data` → `/var/lib/postgresql/data`.
+- `redis`: `redis:7-alpine`, 볼륨 `ygosolver_redis-data` → `/data`, 최대 256MB(`volatile-ttl`). 캐시이므로 비어도 다음 조회에서 다시 채워집니다.
+- 둘 다 healthcheck, `restart: unless-stopped`, 로그 회전(json-file 10MB × 3)이며 **호스트 포트를 열지 않습니다**.
+- `prices`(profile `tools`): `Dockerfile.prices`로 만든 CLI 이미지. `prices.py`, `price_store.py`, `requirements-prices.txt`만 들어가며
+  (`.dockerignore` 허용 목록) 비root 사용자(UID 10001)로 실행합니다. 호스트의 `./data/prices`만 `/data/prices`에 읽기 전용으로 연결합니다.
+
+현재 서버 위치: `aziranserver`의 `/home/pilon1945/ygoSolver`(아래 명령은 모두 이 저장소 루트에서 실행).
+
+처음 설정(`.env`는 git 제외; 이미 있으면 덮어쓰지 않음, 비밀번호를 화면에 출력하지 않음).
+`prices.py`/`price_store.py`를 바꾼 뒤에도 `docker compose build prices`로 이미지를 다시 만들어야 반영됩니다:
+
+```sh
+test -e .env || (umask 077 && printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)" > .env)
+chmod 600 .env
+docker compose build prices            # CLI 이미지 ygosolver-prices:local
+docker compose up -d postgres redis
+docker compose ps                      # 둘 다 (healthy)
+docker compose run --rm prices init    # 표 생성(반복 실행해도 안전)
+```
+
+가져오기와 조회(`DATABASE_URL`/`REDIS_URL`은 compose가 `.env`로 채움):
+
+```sh
+docker compose run --rm prices import --html /data/prices/captures/ja_list.bin --metadata /data/prices/captures/ja_list.json
+docker compose run --rm prices get --card-number YAC1-JP002 --locale ja
+```
+
+- 표: `price_snapshots`(URL, 언어, 범위, 원래 `observed_at`, 상태, SHA-256, 크기; `(source_url, observed_at)` 고유)와
+  `price_observations`(스냅숏별 상품 1행: 상품 ID, 이름, 수록 번호, 언어, 레어도 표기, 판매가(원), 재고 상태·근거, 상품 URL).
+  스냅숏 하나는 한 트랜잭션으로 저장되어 전부 들어가거나 전혀 들어가지 않습니다. 같은 원본 재입력은 0행, 같은 URL·시각에 다른 해시면 실패합니다.
+- `get` 결과: `card_number`, `locale`, `scope: "observed_products"`, `prices`(상품별 필드 + `observed_at`), `expires_at`, `cache_status`(`hit`/`miss`).
+  **정확히 같은** 수록 번호 + 언어의 상품만 모으고 레어도별 상품을 따로 둡니다(예: `YAC1-JP002` PSC 28,000원 / UR 6,000원).
+  상품마다 `observed_at`이 가장 늦은 관찰을 쓰므로, 나중에 가져온 더 오래된 원본이 최신 가격을 덮지 않습니다.
+  이것은 **가져온 목록에서 관찰된 상품**일 뿐 TCGSHOP 전체 재고나 전체 판본을 뜻하지 않습니다.
+- 실패(종료 코드 1, `<단계> failed: <오류 종류>: <내용>`; 접속 비밀번호는 `***`로 가림):
+  기록 없음 `PriceNotFound`, 그룹 안 상품 하나라도 관찰 후 12시간이 지났으면 `StalePriceError`(일부만 돌려주지 않음),
+  미래 시각·잘못된 번호/언어(`JP`=ja, `KR`=ko)·손상된 캐시·PostgreSQL 또는 Redis 장애는 `PriceError`.
+  어떤 실패도 오래된 값이나 SQLite로 대신하지 않고, 없음·만료·오류 결과는 캐시하지 않습니다.
+- 캐시: 키 `ygosolver:prices:v1:{locale}:{card_number}:r{revision}`. revision은 그 번호·언어를 포함한 가장 큰 스냅숏 ID이며,
+  새 가져오기는 새 키를 만들 뿐 기존 키를 지우지 않습니다. 만료는 그룹의 가장 이른 `observed_at` + 12시간의 **절대 시각**(`SET PXAT`)이라
+  키를 지워 다시 채워도 남은 시간만 유지됩니다. 캐시 적중 때도 revision 확인을 위해 PostgreSQL에 색인 조회 1회를 합니다.
+  캐시 값은 식별자·revision·상품 필드·가격·재고 상태·시간대·만료 시각을 모두 검사하고, 맞지 않으면 실패합니다(자동 삭제하지 않음).
+
+운영:
+
+```sh
+docker compose logs --tail 100 postgres redis
+docker compose restart postgres redis
+docker compose up -d --force-recreate postgres redis   # 데이터는 이름 있는 볼륨에 남음 (down -v 금지)
+```
+
+백업은 git 제외 경로인 `data/prices/backups/`에 소유자만 읽을 수 있게 저장합니다:
+
+```sh
+install -d -m 700 data/prices/backups
+(umask 077 && docker compose exec -T postgres pg_dump -U ygosolver -d ygosolver --format=custom \
+  > data/prices/backups/ygosolver-prices.dump)
+```
+
+복원은 기존 가격 표를 덤프 내용으로 바꾸고, 그 뒤 Redis 캐시를 비웁니다. 복원 후 snapshot ID(revision)가 다시 쓰이면
+옛 캐시 키가 새 데이터와 같은 이름이 될 수 있으므로, **복원과 `FLUSHDB`가 끝날 때까지 `get` 등 가격 조회를 멈추고 접근을 막으세요**.
+`--exit-on-error`라 첫 오류에서 멈추고 0이 아닌 종료 코드를 돌려주며, `--single-transaction`이라 실패하면 기존 표가 그대로 남습니다(이때 캐시는 비우지 않음):
+
+```sh
+docker compose exec -T postgres pg_restore -U ygosolver -d ygosolver --clean --if-exists --exit-on-error --single-transaction \
+  < data/prices/backups/ygosolver-prices.dump \
+  && docker compose exec -T redis redis-cli FLUSHDB
+```
+
+검증(상점에 접속하지 않음). 실제 DB 통합 테스트는 일회용 DB `ygosolver_test_*`와 Redis DB 15를 쓰며 운영 DB는 건드리지 않습니다.
+접속 주소는 컨테이너 안에서 `DATABASE_URL`로 만들어 비밀번호를 출력하지 않습니다:
+
+```sh
+docker compose exec -T postgres createdb -U ygosolver ygosolver_test_prices
+docker compose run --rm --no-deps -T -v "$PWD/tests:/app/tests:ro" --entrypoint sh prices -c \
+  'TEST_DATABASE_URL="${DATABASE_URL%/ygosolver}/ygosolver_test_prices" TEST_REDIS_URL=redis://redis:6379/15 \
+   python -m unittest discover -s tests -p test_price_store.py -v'
+docker compose exec -T postgres dropdb -U ygosolver ygosolver_test_prices
+docker compose exec -T redis redis-cli -n 15 FLUSHDB
+```
+
+운영 데이터 점검 `tests/acceptance_price_stack.py`는 이 서버에 옮겨 둔 원본(`data/prices/captures/ja_list.bin`·`ja_list.json`·`tcgshop.sqlite`)과
+PostgreSQL의 56개 상품·캐시 TTL을 비교합니다(DB는 읽기만 하고 Redis 캐시는 채울 수 있음). `--recreate`를 붙이면 postgres/redis 컨테이너를 다시 만든 뒤에도 데이터와 캐시가 남는지 확인합니다:
+
+```sh
+python3 tests/acceptance_price_stack.py              # 읽기 전용 점검
+python3 tests/acceptance_price_stack.py --recreate   # 컨테이너 재생성 포함
+```
+
+현재 한계: 저장된 실제 데이터는 일본판 목록 **한 페이지 56개 상품**(관찰 2026-10-08 07:19:37 UTC, 2026-10-08 19:19:37 UTC에 만료)뿐입니다.
+그 뒤에는 새 응답을 가져올 때까지 `get`이 `StalePriceError`로 실패합니다. 한국판 실데이터, 실제 품절 응답, 자동 수집, 전체 카탈로그는 없습니다.
+
 ## 사용 순서
 
 1. **사진 올리기** — 여러 장 가능. 파일당 최대 20MB, 최대 4천만 화소. 휴대폰 사진의 EXIF 회전은 자동 보정됩니다.

@@ -1,0 +1,64 @@
+# Price data layer: PostgreSQL price history + Redis 12-hour cache.
+# Neither database publishes a host port; only services on this project's
+# network can reach them. The price CLI runs on demand (profile "tools").
+name: ygosolver
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ygosolver
+      POSTGRES_USER: ygosolver
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ygosolver -d ygosolver"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Cache only: bounded memory, entries carry their own absolute expiry.
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-ttl"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *logging
+
+  prices:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile.prices
+    image: ygosolver-prices:local
+    environment:
+      DATABASE_URL: postgresql://ygosolver:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/ygosolver
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./data/prices:/data/prices:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *logging
+
+volumes:
+  postgres-data:
+  redis-data:
