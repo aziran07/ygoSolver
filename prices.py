@@ -4,8 +4,9 @@ This module never contacts the shop. It parses an HTML response that was already
 captured (raw bytes + metadata JSON) and stores one observation per product.
 
 TCGSHOP robots.txt declares a global `Crawl-delay: 43200` (12 hours between any
-two requests to the site). Future collection must respect that spacing; one
-listing page is one snapshot, never the whole catalog.
+two requests to the site). One listing page is one snapshot, never the whole
+catalog. The app's on-demand single-card collection (price_collector.py) does
+not apply that delay.
 
 Usage:
     python prices.py import --html PATH --metadata PATH --db PATH

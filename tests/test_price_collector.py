@@ -34,6 +34,11 @@ def search_html():
 
 
 class CollectorHttpTest(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(price_store, "latest_attempt", return_value=None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def session(self, status=200):
         session = mock.Mock()
         response = session.get.return_value
@@ -98,23 +103,17 @@ class CollectorHttpTest(unittest.TestCase):
             with self.subTest(case=case[:50]), self.assertRaises(price_collector.CollectionError):
                 price_collector.parse_search_page(case, NUMBER, "ja")
 
-    def test_closed_gate_and_database_failure_never_contact_shop(self):
+    def test_database_failure_never_contacts_shop(self):
         session = self.session()
-        next_time = datetime.now(timezone.utc) + timedelta(hours=9)
-        with mock.patch.object(price_store, "reserve_collection", return_value={"allowed": False, "next_allowed_at": next_time}), \
-             mock.patch.object(price_store, "latest_attempt", return_value=None):
-            result = price_collector.collect_card_number(NUMBER, "ja", "postgresql://test", session=session)
-        self.assertEqual((result["state"], result["next_allowed_at"]), ("wait", next_time))
-        session.get.assert_not_called()
-        with mock.patch.object(price_store, "reserve_collection", side_effect=price_store.PriceDatabaseError("db proof")), \
+        with mock.patch.object(price_store, "begin_collection", side_effect=price_store.PriceDatabaseError("db proof")), \
              self.assertRaises(price_store.PriceDatabaseError):
             price_collector.collect_card_number(NUMBER, "ja", "postgresql://test", session=session)
         session.get.assert_not_called()
 
     def test_http_failure_is_persisted_and_not_imported(self):
         now = datetime.now(timezone.utc)
-        permit = {"allowed": True, "attempt_id": 7, "reserved_at": now, "next_allowed_at": now + timedelta(hours=12)}
-        with mock.patch.object(price_store, "reserve_collection", return_value=permit), \
+        permit = {"attempt_id": 7, "started_at": now}
+        with mock.patch.object(price_store, "begin_collection", return_value=permit), \
              mock.patch.object(price_store, "finish_attempt") as finish, \
              mock.patch.object(price_store, "store_listing") as store:
             result = price_collector.collect_card_number(NUMBER, "ja", "postgresql://test", session=self.session(429))
@@ -123,8 +122,73 @@ class CollectorHttpTest(unittest.TestCase):
         self.assertEqual(finish.call_count, 1)
         store.assert_not_called()
 
+    def test_real_search_returns_sale_price_and_stock_without_using_crossed_out_list_price(self):
+        html = (Path(__file__).parent / 'fixtures/tcgshop_search_RV01-JP069.html').read_text(encoding='utf-8')
+        products = price_collector.parse_search_page(html, 'RV01-JP069', 'ja')
+        self.assertEqual(len(products), 1)
+        p = products[0]
+        self.assertEqual((p['product_id'], p['card_number'], p['rarity_label'], p['price_krw'], p['stock_status']),
+                         ('130184', 'RV01-JP069', 'Normal', 640, 'in_stock'))
+        self.assertEqual(p['product_url'], 'http://www.tcgshop.co.kr/goods_detail.php?goodsIdx=130184')
+
+    def test_real_unavailable_stock_is_not_inferred_from_a_price(self):
+        html = (Path(__file__).parent / 'fixtures/tcgshop_search_SLF1-JP081.html').read_text(encoding='utf-8')
+        products = price_collector.parse_search_page(html, 'SLF1-JP081', 'ja')
+        self.assertEqual([(p['product_id'], p['rarity_label'], p['price_krw'], p['stock_status']) for p in products],
+                         [('88627', 'Secret Rare', 12000, 'unknown'), ('88537', 'Super Rare', 5600, 'unknown'),
+                          ('88437', 'Normal', 3200, 'unknown')])
+
+    def test_only_verified_complete_empty_search_is_accepted(self):
+        html = (Path(__file__).parent / 'fixtures/tcgshop_search_SLF1-JP999.html').read_text(encoding='utf-8')
+        self.assertEqual(price_collector.parse_search_page(html, 'SLF1-JP999', 'ja'), [])
+        malformed = [html.replace('<!-- 상품 목록 끝 -->', ''),
+                     html.replace('<!-- 상품 목록 시작 -->', '<!-- 상품 목록 시작 --><!-- 상품 목록 시작 -->'),
+                     html.replace('value="SLF1-JP999"', 'value="SLF1-JP081"'),
+                     html.replace('value="288"', 'value="276"'),
+                     html.replace('<!-- 상품 목록 끝 -->', '<p>Service unavailable</p><!-- 상품 목록 끝 -->'),
+                     html.replace('<!-- 상품 목록 끝 -->', '<table id="list_card_bad"></table><!-- 상품 목록 끝 -->')]
+        for bad in malformed:
+            with self.subTest(bad=bad[-100:]), self.assertRaises(price_collector.CollectionError):
+                price_collector.parse_search_page(bad, 'SLF1-JP999', 'ja')
+
+    def test_previous_failure_is_stable_until_explicit_retry(self):
+        old = datetime.now(timezone.utc) - timedelta(days=2)
+        attempt = {'outcome': 'failed', 'reserved_at': old, 'finished_at': old, 'error': 'HTTP 403 prior'}
+        session = self.session(429)
+        with mock.patch.object(price_store, 'latest_attempt', return_value=attempt), \
+             mock.patch.object(price_store, 'begin_collection', return_value={'attempt_id': 9, 'started_at': old}) as begin, \
+             mock.patch.object(price_store, 'finish_attempt'):
+            prior = price_collector.collect_card_number(NUMBER, 'ja', 'postgresql://test', session=session)
+            self.assertEqual(prior['state'], 'failed')
+            self.assertIn('403 prior', prior['error'])
+            session.get.assert_not_called()
+            begin.assert_not_called()
+            actual = price_collector.collect_card_number(NUMBER, 'ja', 'postgresql://test', session=session, retry=True)
+            self.assertEqual(actual['state'], 'failed')
+            self.assertIn('429', actual['error'])
+            self.assertEqual(session.get.call_count, 1)
+
+    def test_verified_empty_has_finite_freshness_and_explicit_retry(self):
+        now = datetime.now(timezone.utc)
+        for age, retry, expected_calls in [(1, False, 0), (13, False, 1), (1, True, 1)]:
+            observed = now - timedelta(hours=age)
+            prior = {'outcome': 'empty', 'reserved_at': observed, 'finished_at': observed, 'error': None}
+            with mock.patch.object(price_store, 'latest_attempt', return_value=prior), \
+                 mock.patch.object(price_store, 'begin_collection', return_value={'attempt_id': 9, 'started_at': now}), \
+                 mock.patch.object(price_store, 'record_empty', return_value=now), \
+                 mock.patch.object(price_collector, 'fetch_search_page', return_value=({}, [])) as fetch:
+                result = price_collector.collect_card_number(NUMBER, 'ja', 'postgresql://test', retry=retry)
+            self.assertEqual(result['state'], 'empty')
+            self.assertEqual(fetch.call_count, expected_calls)
+            self.assertEqual(result['observed_at'], now if expected_calls else observed)
+
 
 class DemandDecisionTest(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(price_store, "latest_attempt", return_value=None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def quote(self, observations, collect, prints=PRINTS):
         return card_prices.price_with_collection("N", "ja", prints, observations,
                                                  "postgresql://test", "redis://test", collect=collect)
@@ -165,11 +229,9 @@ class DemandDecisionTest(unittest.TestCase):
         self.assertEqual((result["status"], result["unit_price_krw"]), ("ok", 450))
         self.assertEqual(collector.call_count, 1)
 
-    def test_delay_and_failure_never_return_old_amount(self):
-        until = datetime.now(timezone.utc) + timedelta(hours=9)
-        cases = [({"state": "wait", "next_allowed_at": until, "last_attempt": None}, "collection_wait"),
-                 ({"state": "failed", "error": "HTTP 429 proof", "attempted_at": datetime.now(timezone.utc),
-                   "next_allowed_at": until}, "collection_failed")]
+    def test_collection_failure_never_returns_old_amount_or_invents_next_time(self):
+        cases = [({"state": "failed", "error": "HTTP 429 proof", "attempted_at": datetime.now(timezone.utc)},
+                  "collection_failed")]
         for state, status in cases:
             collector = mock.Mock(return_value=state)
             with self.subTest(status=status):
@@ -178,6 +240,8 @@ class DemandDecisionTest(unittest.TestCase):
                 self.assertIsNone(result["unit_price_krw"])
                 if status == "collection_failed":
                     self.assertIn("429", result["detail"])
+                self.assertNotIn("12시간", result["detail"])
+                self.assertNotIn("다음 시도는", result["detail"])
 
     def test_read_failure_after_collection_does_not_use_response_as_price(self):
         collector = mock.Mock(return_value={"state": "stored", "snapshot_id": 12, "product_count": 1})
@@ -194,6 +258,22 @@ class DemandDecisionTest(unittest.TestCase):
              self.assertRaises((ValueError, price_store.PriceError)):
             self.quote({NUMBER: {"not_found": True}}, collector)
         read.assert_not_called()
+
+    def test_verified_empty_after_expiry_never_returns_the_historical_price(self):
+        now = datetime.now(timezone.utc)
+        collector = mock.Mock(return_value={'state': 'empty', 'observed_at': now})
+        result = self.quote({NUMBER: {'error': price_store.StalePriceError('old quote')}}, collector)
+        self.assertEqual(result['status'], 'not_listed')
+        self.assertIsNone(result['unit_price_krw'])
+        self.assertEqual(collector.call_count, 1)
+
+    def test_explicit_retry_uses_the_retry_keyword_not_the_http_session_slot(self):
+        collector = mock.Mock(return_value={'state': 'failed', 'error': 'HTTP 429',
+                                            'attempted_at': datetime.now(timezone.utc)})
+        card_prices.price_with_collection('N', 'ja', PRINTS, {NUMBER: {'not_found': True}},
+                                          'postgresql://test', 'redis://test', collect=collector, retry=True)
+        self.assertEqual(len(collector.call_args.args), 4)
+        self.assertIs(collector.call_args.kwargs['retry'], True)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw, ImageOps
 import card_prices
 import catalog
 import exports
+import price_collector
 import rarities
 import recognition
 import references
@@ -34,6 +35,8 @@ state.setdefault("export_fingerprint", None)
 state.setdefault("card_lookups", {})  # normalized English name -> {"card": ...} or {"error": ...}
 state.setdefault("rarity_lookups", {})  # official CID -> {"rarities": [...]} or {"error": ...}
 state.setdefault("official_prints", {})  # (official CID, locale) -> {"prints": [...]} or {"error": ...}
+state.setdefault("collection_failures", {})  # (card number, locale) -> failed price_collector outcome
+state.setdefault("price_retries", set())  # (official CID, rarity, locale) to collect again on this run
 
 
 @st.cache_resource(show_spinner=False)
@@ -105,7 +108,9 @@ def price_of(cid, rarity):
     """card_prices result for a card's rarity in the chosen edition, computed once per script run.
 
     Prices are never kept across reruns, so every rerun reflects the price store's current state and expiry. A
-    missing or expired price is collected from the shop when the global 12-hour request gate allows it.
+    missing or expired price is collected from the shop now. A failed collection is requested again only after the
+    card's "가격 수집 다시 시도" button; a verified empty search is reused for 12 hours and then searched again
+    automatically, or earlier with that button.
     """
     key = (cid, rarity)
     if key not in price_results:
@@ -119,10 +124,27 @@ def price_of(cid, rarity):
             price_results[key] = card_prices.price_result("official_error", price_locale, prints["error"])
         else:
             # Only the rarity asked for here is collected, and only when its stored price is missing or expired.
+            retry_key = (cid, rarity, price_locale)
+            retry = retry_key in state.price_retries
+            state.price_retries.discard(retry_key)
             price_results[key] = card_prices.price_with_collection(
                 rarity, price_locale, prints["prints"], price_observations, DATABASE_URL, REDIS_URL,
-                fetching=lambda number: st.spinner(f"TCGSHOP에서 {number} 가격 수집 중…"))
+                collect=collect_price, fetching=lambda number: st.spinner(f"TCGSHOP에서 {number} 가격 수집 중…"),
+                retry=retry)
     return price_results[key]
+
+
+def collect_price(card_number, locale, database_url, fetching, retry):
+    """price_collector.collect_card_number, with a failed outcome kept for the session until an explicit retry."""
+    key = (card_number, locale)
+    if not retry and key in state.collection_failures:
+        return state.collection_failures[key]
+    outcome = price_collector.collect_card_number(card_number, locale, database_url, fetching, retry=retry)
+    if outcome["state"] == "failed":
+        state.collection_failures[key] = outcome
+    else:
+        state.collection_failures.pop(key, None)
+    return outcome
 
 
 def price_summary(result):
@@ -263,7 +285,7 @@ st.title("유희왕 덱 사진 → 카드 목록")
 st.caption("사진은 이 앱을 실행하는 컴퓨터(서버 주소로 접속했다면 그 서버)로 전송되어 그곳에서만 처리되며, 그 밖의 외부로는 보내지 않습니다. 네트워크는 모델 최초 다운로드, 공식 카드 DB의 "
            "카드 이름·공식 이미지(후보별 공식 일러스트 포함)·수록 번호 조회, 아래의 TCGSHOP 가격 수집 요청에 사용됩니다. 레어도는 미리 준비한 로컬 공식 DB에서 "
            "읽습니다. 가격은 서버의 가격 DB를 먼저 읽고, 고른 레어도의 가격이 없거나 만료됐을 때만 서버가 TCGSHOP에 카드 번호 "
-           "검색을 요청합니다(앱 전체 12시간에 한 번).")
+           "검색을 요청합니다.")
 
 # --- 1. Model -------------------------------------------------------------
 if not recognition.models_ready():
@@ -430,11 +452,10 @@ language_key = LANGUAGES[language]
 price_locale = PRICE_LOCALES[st.radio(
     "가격 기준 판본 (실물 카드 언어)", list(PRICE_LOCALES), horizontal=True, key="price_locale",
     help="가격을 찾을 실물 카드의 언어판입니다. 내보낼 카드명 언어와 별개입니다.")]
-st.info("가격은 서버 가격 DB에 저장된 TCGSHOP 상품을 먼저 읽습니다. 고른 레어도의 가격이 없거나 만료됐을 때만 상점에서 "
-        "그 카드 번호를 검색해 수집하는데, 상점 robots.txt에 따라 앱 전체에서 **12시간에 한 번만** 요청할 수 있어 "
-        "그 전에는 **수집 대기**와 다음 가능 시각을 표시합니다.")
-st.caption("다음 가능 시각이 지난 뒤 화면을 다시 열거나 새로 고칠 때 수집을 시도하며, 예약 작업은 없습니다. 검색 결과 첫 페이지만 "
-           "수집합니다. 단가는 저장된 상품 중 재고 있음 상품의 최저가이며 전체 시장 최저가가 아닙니다. 공식 수록 번호·레어도가 "
+st.info("가격은 서버 가격 DB에 저장된 TCGSHOP 상품을 먼저 읽습니다. 고른 레어도의 가격이 없거나 만료됐을 때만 바로 "
+        "상점에서 그 카드 번호를 검색해 저장한 뒤 DB에서 다시 읽습니다. 수집이 실패하면 **수집 실패**와 오류를 표시하고, "
+        "카드의 **가격 수집 다시 시도**를 누를 때까지 다시 요청하지 않습니다.")
+st.caption("검색 결과 첫 페이지만 수집하며, 검색 결과가 없으면 **상점 상품 없음**을 12시간 동안 표시합니다. 단가는 저장된 상품 중 재고 있음 상품의 최저가이며 전체 시장 최저가가 아닙니다. 공식 수록 번호·레어도가 "
            "정확히 일치하는 상품만 연결하고, 관찰 후 12시간이 지난 가격은 쓰지 않습니다. 사유·수록 번호·상품·시각은 카드별 가격 "
            "상세에 있습니다.")
 
@@ -582,6 +603,10 @@ for row in list(state.rows):
                         if price["status"] == "ok":
                             st.write(f"수록 번호 {price['card_number']} · [상품 {price['product_id']}]({price['product_url']})")
                             st.write(f"관찰 {kst(price['observed_at'])} · 만료 {kst(price['expires_at'])}")
+                    if price["status"] in ("collection_failed", "not_listed"):
+                        if edit_column.button("가격 수집 다시 시도", key=f"retry_price_{key}"):
+                            state.price_retries.add((card["cid"], row["rarity"], price_locale))
+                            st.rerun()
                 else:
                     price_column.caption(f"단가 ({edition}): 레어도를 고르면 표시됩니다.")
                 if (card["cid"], price_locale) in state.official_prints \

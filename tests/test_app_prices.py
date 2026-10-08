@@ -35,8 +35,8 @@ class PriceAppTest(unittest.TestCase):
         self.failure = None
         self.stock = "in_stock"
         self.observed_at = product()["observed_at"]
-        self.collection_state = {"state": "wait", "next_allowed_at": datetime.now(timezone.utc) + timedelta(hours=9),
-                                 "last_attempt": None}
+        self.collection_state = {"state": "failed", "error": "HTTP 429 proof",
+                                 "attempted_at": datetime.now(timezone.utc)}
         patches = [
             mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://example", "REDIS_URL": "redis://example"}),
             mock.patch.object(recognition, "models_ready", return_value=True),
@@ -99,18 +99,18 @@ class PriceAppTest(unittest.TestCase):
         app.selectbox(key="rarity_one").set_value("UR").run()
         self.assertFalse(app.exception)
         self.assertFalse(app.checkbox(key="confirmed").value)
-        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_wait"])
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
         self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
         self.assertEqual(app.selectbox(key="rarity_one").options, ["노멀", "울트라 레어"])
-        self.assertEqual(app.metric[0].value, "수집 대기")
+        self.assertEqual(app.metric[0].value, "수집 실패")
         self.assert_downloads(app, True)
 
-    def test_missing_prices_attempt_collection_and_show_wait_not_zero_or_sold_out(self):
+    def test_missing_prices_attempt_collection_and_show_actual_failure_not_zero_or_sold_out(self):
         self.failure = price_store.PriceNotFound("not captured")
         app = self.start()
-        self.assertEqual(app.metric[0].value, "수집 대기")
+        self.assertEqual(app.metric[0].value, "수집 실패")
         self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
-        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_wait"])
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
         self.assertEqual(self.collect.call_count, 1)
         self.assertEqual(self.collect.call_args.args[:2], ("15AY-JPB22", "ja"))
         visible = " ".join(e.value for kind in ("caption", "info", "warning", "markdown")
@@ -119,7 +119,7 @@ class PriceAppTest(unittest.TestCase):
 
     def test_separate_field_distinguishes_stock_expiry_and_backend_failures(self):
         cases = [("out_of_stock", None, "no_stock"),
-                 ("in_stock", price_store.StalePriceError("expired proof"), "collection_wait"),
+                 ("in_stock", price_store.StalePriceError("expired proof"), "collection_failed"),
                  ("in_stock", price_store.PriceDatabaseError("db proof"), "database_error"),
                  ("in_stock", price_store.PriceCacheError("cache proof"), "cache_error")]
         seen = set()
@@ -142,7 +142,7 @@ class PriceAppTest(unittest.TestCase):
         self.assertFalse(app.checkbox(key="confirmed").value)
         self.assertEqual(list(app.dataframe[0].value["카드명"]), [NAME_KO])
         self.assertEqual(list(app.dataframe[0].value["가격 판본"]), ["ko"])
-        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_wait"])
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
         self.assertEqual(app.metric[0].label, "단가 (한국판)")
 
     def test_price_change_and_expiry_each_reset_confirmation_without_losing_card(self):
@@ -160,7 +160,7 @@ class PriceAppTest(unittest.TestCase):
         app.run()
         self.assertFalse(app.exception)
         self.assertFalse(app.checkbox(key="confirmed").value)
-        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_wait"])
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
         self.assertEqual(list(app.dataframe[0].value["카드명"]), [NAME_KO])
         self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
         app.checkbox(key="confirmed").check().run()
@@ -199,6 +199,11 @@ class PriceAppTest(unittest.TestCase):
         self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["ok"])
         self.assertEqual(list(app.dataframe[0].value["단가(원)"]), [520])
         self.assertEqual(self.collect.call_count, 1)
+        visible = " ".join(e.value for kind in ("caption", "info", "warning", "markdown")
+                           for e in app.get(kind))
+        self.assertNotIn("수집 대기", visible)
+        self.assertNotIn("43200", visible)
+        self.assertNotIn("12시간 간격", visible)
         app.checkbox(key="confirmed").check().run()
         self.assertFalse(app.exception)
         self.assertTrue(app.checkbox(key="confirmed").value)
@@ -208,13 +213,36 @@ class PriceAppTest(unittest.TestCase):
     def test_failed_collection_is_visible_and_never_exports_old_amount(self):
         self.failure = price_store.StalePriceError("old")
         self.collection_state = {"state": "failed", "error": "HTTP 429 proof",
-                                 "attempted_at": datetime.now(timezone.utc),
-                                 "next_allowed_at": datetime.now(timezone.utc) + timedelta(hours=12)}
+                                 "attempted_at": datetime.now(timezone.utc)}
         app = self.start()
         self.assertEqual(app.metric[0].value, "수집 실패")
         self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
         self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
         self.assertIn("429", app.dataframe[0].value["가격 상세"].iloc[0])
+
+    def test_failed_request_is_not_repeated_by_confirmation_but_explicit_retry_can_recover(self):
+        self.failure = price_store.PriceNotFound("not collected")
+        app = self.start()
+        self.assertEqual(self.collect.call_count, 1)
+        app.checkbox(key="confirmed").check().run()
+        self.assertFalse(app.exception)
+        self.assertTrue(app.checkbox(key="confirmed").value)
+        self.assertEqual(self.collect.call_count, 1)
+        retries = [button for button in app.button
+                   if "가격" in button.label and ("다시" in button.label or "재시도" in button.label)]
+        self.assertEqual(len(retries), 1)
+
+        def stored(*args, **kwargs):
+            self.failure = None
+            self.cost = 520
+            return {"state": "stored", "snapshot_id": 21, "product_count": 1}
+
+        self.collect.side_effect = stored
+        retries[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(self.collect.call_count, 2)
+        self.assertEqual(app.metric[0].value, "520원")
+        self.assertFalse(app.checkbox(key="confirmed").value)
 
     def test_actual_download_callback_rejects_price_that_expired_after_confirmation(self):
         callbacks = {}

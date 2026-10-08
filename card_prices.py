@@ -10,8 +10,8 @@ Shop product names are never used, there is no fuzzy matching, and rarity_prints
 number. card_price() never contacts the shop.
 
 price_with_collection() adds on-demand collection for one selected rarity: only when its stored price is missing
-or expired, it asks price_collector to fetch the search page of one missing card number (when the global 12-hour
-shop request gate allows), stores it, reads it back from PostgreSQL/Redis and maps it with the same strict rules.
+or expired, it asks price_collector to fetch the search page of each missing card number in turn, stores it, reads
+it back from PostgreSQL/Redis and maps it with the same strict rules.
 
 The result covers the stored products only (listing snapshots and first search result pages): it is the lowest
 price among the observed in-stock products, not the lowest price of the whole market.
@@ -67,7 +67,7 @@ STATUS_LABELS = {
     "data_error": "가격 데이터 오류",
     "config_error": "가격 DB 설정 없음",
     "official_error": "공식 수록 조회 실패",
-    "collection_wait": "수집 대기",
+    "not_listed": "상점 상품 없음",
     "collection_failed": "수집 실패",
 }
 
@@ -325,40 +325,24 @@ def numbers_to_collect(rarity, locale, official_prints, observations):
                   key=lambda number: (reasons[number] != "저장된 가격 만료", number))
 
 
-def waiting_result(number, reason, locale, outcome):
-    """collection_wait / collection_failed result for a number the gate did not let us request now."""
-    next_time = kst_text(outcome["next_allowed_at"])
-    attempt = outcome["last_attempt"]
-    if attempt is not None and attempt["outcome"] == "failed":
-        return price_result("collection_failed", locale,
-                            f"{number}: {reason}. {kst_text(attempt['reserved_at'])} 상점 수집 실패 — {attempt['error']}. "
-                            f"상점 요청 간격(12시간) 때문에 다음 시도는 {next_time} 이후입니다")
-    previous = ""
-    if attempt is not None and attempt["outcome"] == "pending":
-        previous = f" {kst_text(attempt['reserved_at'])}에 시작한 수집은 결과가 아직 기록되지 않았습니다(진행 중이거나 중단됨)."
-    elif attempt is not None:
-        previous = f" 마지막 수집 {kst_text(attempt['reserved_at'])}."
-    return price_result("collection_wait", locale,
-                        f"{number}: {reason}.{previous} 상점 요청 간격(robots.txt 12시간, 앱 전체 공유) 때문에 지금은 "
-                        f"수집하지 않습니다. {next_time} 이후 화면을 다시 열거나 새로 고치면 수집을 시도합니다"
-                        "(예약 작업이 아닙니다)")
-
-
 def price_with_collection(rarity, locale, official_prints, observations, database_url, redis_url,
-                          collect=None, fetching=nullcontext):
+                          collect=None, fetching=nullcontext, retry=False):
     """card_price() of the selected rarity, collecting its missing or expired card numbers from the shop first.
 
     Collection runs only when the stored result is not_observed or expired, one card number at a time through
-    collect (default price_collector.collect_card_number); a stored page is read back with observe_card_numbers (which
-    updates observations in place) and mapped by card_price again. Database, cache, data, config and official
-    errors and every other status never contact the shop. A gate wait or failed attempt is the result. The detail
-    depends only on stored data and attempts, never on whether this run collected, so a rerun right after a
-    collection keeps the same exported values (and the user's confirmation).
+    collect (default price_collector.collect_card_number, called with retry); a stored page is read back with
+    observe_card_numbers (which updates observations in place) and mapped by card_price again. The first failed
+    number stops collection and is the result (collection_failed). A number whose search was verified empty replaces
+    only its own observation (updated in place) with "not found", so an expired stored price of that number is never
+    used; when the result is then not_observed, it is not_listed. Database, cache, data, config and official errors and every
+    other status never contact the shop. The detail depends only on stored data and attempts, never on whether this
+    run collected, so a rerun right after a collection keeps the same exported values (and the user's confirmation).
     """
     collect = collect or price_collector.collect_card_number  # looked up per call so it can be replaced in tests
     redact_urls = (database_url, redis_url)
     result = card_price(rarity, locale, official_prints, observations, redact_urls)
     collected = []
+    empty_searches = {}  # card number -> when its search was verified empty
     while result["status"] in COLLECTABLE_STATUSES:
         pending = [number for number in numbers_to_collect(rarity, locale, official_prints, observations)
                    if number not in collected]
@@ -367,20 +351,31 @@ def price_with_collection(rarity, locale, official_prints, observations, databas
         number = pending[0]
         reason = missing_reason(observations[number], datetime.now(timezone.utc))
         try:
-            outcome = collect(number, locale, database_url, fetching)
+            outcome = collect(number, locale, database_url, fetching, retry=retry)
         except price_store.PriceError as error:
             message = price_store.redact(str(error), *redact_urls)
             return price_result(failure_status(error), locale,
                                 f"{number} 가격 수집 중 오류: {type(error).__name__}: {message}")
-        if outcome["state"] == "wait":
-            return waiting_result(number, reason, locale, outcome)
         if outcome["state"] == "failed":
             return price_result("collection_failed", locale,
                                 f"{number}: {reason}. {kst_text(outcome['attempted_at'])} 상점 수집 실패 — "
-                                f"{outcome['error']}. 다음 시도는 {kst_text(outcome['next_allowed_at'])} 이후입니다")
+                                f"{outcome['error']}. '가격 수집 다시 시도'를 누르면 다시 요청합니다")
+        collected.append(number)
+        if outcome["state"] == "empty":
+            empty_searches[number] = outcome["observed_at"]
+            # The shop no longer lists this number: its stored (possibly expired) rows are not current, so only
+            # this number is replaced by "nothing observed" and the result is mapped again by the same rules.
+            observations[number] = {"not_found": True}
+            result = card_price(rarity, locale, official_prints, observations, redact_urls)
+            continue
         if outcome["state"] != "stored":
             raise ValueError(f"{number}: unknown collection outcome state {outcome['state']!r}")
-        collected.append(number)
         observations.update(observe_card_numbers([number], locale, database_url, redis_url))
         result = card_price(rarity, locale, official_prints, observations, redact_urls)
+    if result["status"] == "not_observed" and empty_searches:
+        searched = ", ".join(f"{number}({kst_text(moment)})" for number, moment in sorted(empty_searches.items()))
+        return price_result("not_listed", locale,
+                            f"TCGSHOP 카드 번호 검색 결과에 상품이 없습니다: {searched}. 검색 결과는 12시간 동안 다시 쓰며, "
+                            f"'가격 수집 다시 시도'를 누르면 다시 검색합니다. {result['detail']}",
+                            expires_at=min(empty_searches.values()) + price_store.PRICE_LIFETIME)
     return result

@@ -1,14 +1,19 @@
 """On-demand TCGSHOP price collection for one exact official card number (the only module that contacts the shop).
 
-Route: the listing category search of the stored listing page (form sortForm, GET goods_list.php with the
-category Index and searchstring; Index 288 = Japanese cards, 276 = Korean cards). robots.txt allows goods_list.php
-and disallows the rest of the site, so search_result.php is never used. This search route and its result markers
-were read from the stored listing page and are NOT verified against a live search response yet.
+Route: the listing category search (form sortForm; its search button runs goodsSort(), which opens
+goods_list.php?data=&Index=<category>&searchstring=<text>; Index 288 = Japanese cards, 276 = Korean cards).
+robots.txt allows goods_list.php and disallows the rest of the site, so search_result.php is never used. Verified
+with real Japanese search responses on 2026-10-08 (data/experiments/on_demand_prices, not in Git): the page echoes
+the search text in sortForm, lists only products of that card number between the "상품 목록 시작/끝" comments,
+and an empty result leaves only a spacer row there. Korean (Index 276) search responses were not observed.
 
-Every request first reserves the global request gate in PostgreSQL (price_store.reserve_collection): TCGSHOP
-robots.txt declares `Crawl-delay: 43200`, so the whole app sends at most one shop request per 12 hours, and a
-failed request uses the interval too. One request reads only the first result page; it is not the whole catalog.
-There is no retry, no sleeping and no background schedule: a later page load tries again once the gate allows.
+The request is sent immediately when a selected card's stored price is missing or expired (stored prices stay
+valid for 12 hours, PRICE_LIFETIME). There is no global request gate or interval between requests: the site's
+robots.txt `Crawl-delay: 43200` is not applied to these single-card lookups. Every request is recorded in
+PostgreSQL (price_store.begin_collection) before it is sent. One request reads only the first result page; it is
+not the whole catalog. There is no automatic retry and no background schedule: a failed request stays the card
+number's result until an explicit retry (retry=True), and a verified empty search is reused for 12 hours, so reruns
+do not send the same request again.
 """
 
 import hashlib
@@ -25,7 +30,11 @@ SEARCH_URL = prices.LIST_URL_PREFIX + "?data=&Index={index}&searchstring={card_n
 CATEGORY_INDEXES = {locale: index for index, locale in prices.CATEGORY_LOCALES.items()}
 SEARCH_SCOPE = "card_number_search_first_page"
 TIMEOUT_SECONDS = (5, 20)  # connect, read
-USER_AGENT = "ygoSolver price lookup (one request per 12 hours, robots.txt Crawl-delay)"
+USER_AGENT = "ygoSolver price lookup (single card number search)"
+LIST_START = "<!-- 상품 목록 시작 -->"
+LIST_END = "<!-- 상품 목록 끝 -->"
+# Whitespace-normalized content between LIST_START and LIST_END of a real search page without results.
+EMPTY_LIST = '<tr> <tr><td height="10"></td></tr> </form> </table></tr>'
 
 
 class CollectionError(prices.PriceError):
@@ -43,8 +52,9 @@ def parse_search_page(html, card_number, locale):
     """Products of a search result page, only when it is exactly the requested category search.
 
     The page must carry one sortForm for goods_list.php whose category Index is the locale's and whose search box
-    echoes the requested card number, and every listed product must have exactly that card number. A page without
-    product blocks fails: no verified "no results" marker is known, so it is not treated as an empty result.
+    echoes the requested card number, and every listed product must have exactly that card number. [] means a
+    verified empty result: no product block, and the one product list between LIST_START and LIST_END holds exactly
+    the spacer of a real empty search page. Any other page without product blocks fails.
     """
     url = search_url(card_number, locale)
     soup = BeautifulSoup(html, "html.parser")
@@ -57,6 +67,15 @@ def parse_search_page(html, card_number, locale):
     searched = [field.get("value") for field in forms[0].select('input[name="searchstring"]')]
     if searched != [card_number]:
         raise CollectionError(f"{url}: page search box shows {searched}, not the requested {card_number}")
+    if not soup.select("table[id^=list_card_]"):
+        if html.count(LIST_START) != 1 or html.count(LIST_END) != 1 or html.index(LIST_START) > html.index(LIST_END):
+            raise CollectionError(f"{url}: no product blocks and no single product list between {LIST_START} and "
+                                  f"{LIST_END}")
+        product_list = " ".join(html[html.index(LIST_START) + len(LIST_START):html.index(LIST_END)].split())
+        if product_list != EMPTY_LIST:
+            raise CollectionError(f"{url}: no product blocks, and the product list is not the known empty result: "
+                                  f"{product_list[:200]!r}")
+        return []
     try:
         products = prices.parse_tcgshop_list(html, url)
     except prices.PriceError as error:
@@ -100,35 +119,40 @@ def fetch_search_page(card_number, locale, session=None):
     return metadata, products
 
 
-def collect_card_number(card_number, locale, database_url, fetching=nullcontext, session=None):
-    """Collect one card number's search page if the global gate allows it now, and store it.
+def collect_card_number(card_number, locale, database_url, fetching=nullcontext, session=None, retry=False):
+    """Collect one card number's search page now and store it.
 
     Returns {"state": "stored", "snapshot_id", "product_count", "observed_at"},
-    {"state": "wait", "next_allowed_at", "last_attempt"} (no request sent; last_attempt is
-    price_store.latest_attempt for this number), or
-    {"state": "failed", "error", "attempted_at", "next_allowed_at"} (the request was sent or reserved and failed;
-    recorded in PostgreSQL). fetching(card_number) is a context manager around the HTTP request only (the app's
-    spinner). PostgreSQL failures raise price_store.PriceError; when the reservation fails no request is sent.
+    {"state": "empty", "observed_at"} (verified empty search; observed_at is when it was recorded), or
+    {"state": "failed", "error", "attempted_at"}. Every request is recorded in PostgreSQL. Unless retry is true, the
+    card number's latest recorded attempt is the result without a request when it failed (at any age) or was an
+    empty search less than PRICE_LIFETIME ago. fetching(card_number) is a context manager around the HTTP request
+    only (the app's spinner). PostgreSQL failures raise price_store.PriceError; when the attempt cannot be recorded
+    no request is sent.
     """
     url = search_url(card_number, locale)
-    reservation = price_store.reserve_collection(card_number, locale, url, database_url)
-    if not reservation["allowed"]:
-        return {"state": "wait", "next_allowed_at": reservation["next_allowed_at"],
-                "last_attempt": price_store.latest_attempt(card_number, locale, database_url)}
+    if not retry:
+        last = price_store.latest_attempt(card_number, locale, database_url)
+        if last is not None and last["outcome"] == "failed":
+            return {"state": "failed", "error": last["error"], "attempted_at": last["reserved_at"]}
+        if last is not None and last["outcome"] == "empty" \
+                and last["finished_at"] + price_store.PRICE_LIFETIME > datetime.now(timezone.utc):
+            return {"state": "empty", "observed_at": last["finished_at"]}
+    attempt = price_store.begin_collection(card_number, locale, url, database_url)
     try:
         with fetching(card_number):
             metadata, products = fetch_search_page(card_number, locale, session)
     except CollectionError as error:
         message = str(error)
-        price_store.finish_attempt(reservation["attempt_id"], message, database_url)
-        return {"state": "failed", "error": message, "attempted_at": reservation["reserved_at"],
-                "next_allowed_at": reservation["next_allowed_at"]}
+        price_store.finish_attempt(attempt["attempt_id"], message, database_url)
+        return {"state": "failed", "error": message, "attempted_at": attempt["started_at"]}
+    if not products:
+        return {"state": "empty", "observed_at": price_store.record_empty(attempt["attempt_id"], database_url)}
     try:
-        stored = price_store.store_listing(metadata, products, database_url, reservation["attempt_id"],
-                                           SEARCH_SCOPE)
+        stored = price_store.store_listing(metadata, products, database_url, attempt["attempt_id"], SEARCH_SCOPE)
     except price_store.PriceError as error:
         # The response was received but not stored: the attempt is recorded as failed and the error propagates.
-        price_store.finish_attempt(reservation["attempt_id"], f"응답 저장 실패: {error}", database_url)
+        price_store.finish_attempt(attempt["attempt_id"], f"응답 저장 실패: {error}", database_url)
         raise
     return {"state": "stored", "snapshot_id": stored["snapshot_id"], "product_count": stored["product_count"],
             "observed_at": datetime.fromisoformat(metadata["observed_at"])}
