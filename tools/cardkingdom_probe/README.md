@@ -9,6 +9,23 @@ Test contract: `python /probe/acceptance_cardkingdom_container.py --output /evid
 writes `report.json` plus rendered text/screenshots, exits 0 only when the
 browser search and both product checks succeed, nonzero otherwise.
 
+## Observed result (2026-10-08)
+
+[Actions run 37733371611](https://github.com/aziran07/ygoSolver/actions/runs/37733371611)
+tested commit `9bad15bb5a57cdeb96c9d607e63ef36ef5992f70` at 05:38 UTC.
+The image built successfully and Chromium 153.0.8010.12 launched on Ubuntu
+24.04.4 in Docker as UID 1001, with sandbox requested and zero initial cookies.
+The browser loaded `https://example.com/` with HTTP 200.
+
+The first Cardkingdom home document returned **HTTP 429** and rendered a service
+unavailable page. The test exited 1 at `shop_home`; search, both product checks,
+and the second fresh-container run were **not reached**. The workflow remains
+failed, with the report, rendered text, screenshot and runtime metadata saved
+as evidence. This proves the container can run the browser, but does not
+establish an unattended Cardkingdom price lookup path. The reason for the 429
+(network, browser characteristics, session state, or another factor) remains
+undetermined; AWS accessibility has not been tested. No bypass or retry was used.
+
 ## Pinned inputs
 
 | Input | Value | Source |
