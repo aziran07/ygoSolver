@@ -35,7 +35,7 @@ class RarityAppTest(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual(app.selectbox(key="rarity_a").value, "N")
         self.assertEqual(app.selectbox(key="rarity_b").value, "SR")
-        self.assertEqual(app.selectbox(key="rarity_b").options, ["슈퍼 레어", "울트라 레어"])
+        self.assertEqual([option.split(" · ")[0] for option in app.selectbox(key="rarity_b").options], ["슈퍼 레어", "울트라 레어"])
         self.assertEqual(app.text_input(key="name_a").value, "내 우라라")
         self.assertEqual(app.number_input(key="quantity_a").value, 3)
         app.selectbox(key="rarity_a").set_value("UR").run()

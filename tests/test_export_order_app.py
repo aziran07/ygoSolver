@@ -3,6 +3,7 @@
 import copy
 import csv
 import io
+import os
 import json
 import sqlite3
 import tempfile
@@ -12,6 +13,11 @@ from pathlib import Path
 from unittest import mock
 
 from openpyxl import load_workbook
+from streamlit.delta_generator import DeltaGenerator
+from price_test_fixtures import capture_downloads
+
+PRICE_HEADERS = ['단가(원)', '합계(원)']
+PRICE_VALUES = [None, None]
 
 import exports
 import rarities
@@ -35,14 +41,13 @@ class ExportOrderAppTest(unittest.TestCase):
             (6, monster("リンク／効果", level=4), 90006),
         ])
         self.files = {}
+        download_patch = mock.patch.object(DeltaGenerator, 'download_button', capture_downloads(self.files))
+        download_patch.start()
+        self.addCleanup(download_patch.stop)
+        environment = mock.patch.dict(os.environ, {'DATABASE_URL': '', 'REDIS_URL': ''})
+        environment.start()
+        self.addCleanup(environment.stop)
         actual_sort = exports.sort_cards
-
-        def record(format_name, writer):
-            def write(*args, **kwargs):
-                result = writer(*args, **kwargs)
-                self.files[format_name] = result
-                return result
-            return write
 
         for patch in (
             mock.patch.object(recognition, "models_ready", return_value=True),
@@ -50,8 +55,6 @@ class ExportOrderAppTest(unittest.TestCase):
             mock.patch.object(rarities, "get_rarities", return_value=["N", "SR"]),
             mock.patch.object(exports, "sort_cards", side_effect=lambda cards:
                               actual_sort(cards, database_path=self.database)),
-            mock.patch.object(exports, "to_csv_bytes", side_effect=record("csv", exports.to_csv_bytes)),
-            mock.patch.object(exports, "to_xlsx_bytes", side_effect=record("xlsx", exports.to_xlsx_bytes)),
         ):
             patch.start()
             self.addCleanup(patch.stop)
@@ -77,11 +80,12 @@ class ExportOrderAppTest(unittest.TestCase):
             ["카드 3", "노멀", 1], ["카드 4", "노멀", 1], ["카드 5", "노멀", 1],
             ["카드 6", "노멀", 1],
         ]
+        expected = [values + PRICE_VALUES for values in expected]
         self.assertEqual(app.dataframe[0].value.values.tolist(), expected)
         app.checkbox(key="confirmed").check().run()
-        header = ["카드명", "레어도", "수량"]
+        header = ["카드명", "레어도", "수량", *PRICE_HEADERS]
         self.assertEqual(list(csv.reader(io.StringIO(self.files["csv"].decode("utf-8-sig")))),
-                         [header, *[[str(v) for v in values] for values in expected]])
+                         [header, *[["" if v is None else str(v) for v in values] for values in expected]])
         self.assertEqual(list(load_workbook(io.BytesIO(self.files["xlsx"])).active.values),
                          [tuple(header), *[tuple(values) for values in expected]])
         self.assertEqual(app.session_state["rows"], before)
@@ -102,13 +106,14 @@ class ExportOrderAppTest(unittest.TestCase):
             ["카드 3", "노멀", 1], ["카드 4", "노멀", 1], ["카드 5", "노멀", 1],
             ["카드 6", "노멀", 1],
         ]
+        expected = [values + PRICE_VALUES for values in expected]
         self.assertEqual(app.dataframe[0].value.values.tolist(), expected)
         app.checkbox(key="confirmed").check().run()
         self.assertFalse(app.error)
         self.assertEqual(download_buttons_disabled(app), [False, False])
-        header = ["카드명", "레어도", "수량"]
+        header = ["카드명", "레어도", "수량", *PRICE_HEADERS]
         self.assertEqual(list(csv.reader(io.StringIO(self.files["csv"].decode("utf-8-sig")))),
-                         [header, *[[str(v) for v in values] for values in expected]])
+                         [header, *[["" if v is None else str(v) for v in values] for values in expected]])
         self.assertEqual(list(load_workbook(io.BytesIO(self.files["xlsx"])).active.values),
                          [tuple(header), *[tuple(values) for values in expected]])
         self.assertEqual(app.session_state["rows"], before)

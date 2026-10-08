@@ -1,0 +1,350 @@
+"""Codex UI tests for user's rarity/price and export workflow."""
+import copy
+import csv
+import io
+import os
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from streamlit.testing.v1 import AppTest
+from streamlit.delta_generator import DeltaGenerator
+from openpyxl import load_workbook
+import card_prices
+import catalog
+import deck_order
+import price_store
+import price_collector
+import rarities
+import recognition
+import references
+from price_test_fixtures import CID, NAME_JA, NAME_KO, group, product, capture_downloads
+
+APP_PATH = str(Path(__file__).resolve().parents[1] / "app.py")
+CARD = {"cid": CID, "name_ko": NAME_KO, "name_ja": NAME_JA,
+        "name_en": "Diffusion Wave-Motion", "image_path": None, "source_url": catalog.detail_url(CID, "en")}
+
+
+def row(key="one", quantity=1):
+    return {"key": key, "source": "manual", "image_name": None, "index": None, "crop": None,
+            "candidates": [], "status": "manual", "choice": None, "card": dict(CARD),
+            "error": None, "quantity": quantity, "name_override": ""}
+
+
+class PriceAppTest(unittest.TestCase):
+    def setUp(self):
+        self.cost = 240
+        self.failure = None
+        self.stock = "in_stock"
+        self.observed_at = product()["observed_at"]
+        self.collection_state = {"state": "failed", "error": "HTTP 429 proof",
+                                 "attempted_at": datetime.now(timezone.utc)}
+        patches = [
+            mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://example", "REDIS_URL": "redis://example"}),
+            mock.patch.object(recognition, "models_ready", return_value=True),
+            mock.patch.object(references, "library_info", return_value=None),
+            mock.patch.object(rarities, "get_rarities", return_value=["N", "UR"]),
+            mock.patch.object(deck_order, "get_sort_keys", return_value={CID: (2, 1)}),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.prints_patch = mock.patch.object(card_prices, "fetch_official_prints", side_effect=lambda cid, locale:
+            [{"pid": 1, "card_number": "15AY-JPB22" if locale == "ja" else "SD6-KR030", "rid": 1},
+             {"pid": 2, "card_number": "EE1-JP162" if locale == "ja" else "SD6-KR031", "rid": 4}])
+        self.fetch = self.prints_patch.start()
+        self.addCleanup(self.prints_patch.stop)
+        patch = mock.patch.object(price_store, "get_prices", side_effect=self.read_prices)
+        self.read = patch.start()
+        self.addCleanup(patch.stop)
+        patch = mock.patch.object(price_collector, "collect_card_number", side_effect=lambda *args, **kwargs: self.collection_state)
+        self.collect = patch.start()
+        self.addCleanup(patch.stop)
+
+    def read_prices(self, number, locale, database_url, redis_url):
+        if self.failure:
+            raise self.failure
+        if locale == "ko" or number == "EE1-JP162":
+            raise price_store.PriceNotFound("not captured")
+        return group(number, [product(price=self.cost, stock=self.stock, observed_at=self.observed_at)])
+
+    def start(self, rows=None, show_status=True):
+        app = AppTest.from_file(APP_PATH, default_timeout=20)
+        app.session_state["rows"] = [row()] if rows is None else rows
+        if show_status:
+            app.session_state["export_price_status"] = True
+        app.run()
+        self.assertFalse(app.exception)
+        return app
+
+    def assert_downloads(self, app, disabled):
+        self.assertEqual([b.proto.disabled for b in app.get("download_button")], [disabled, disabled])
+
+    def test_rarity_names_and_separate_unit_price_keep_aggregated_export_total(self):
+        app = self.start([row("one", 2), row("two", 3)])
+        self.assertEqual(app.selectbox(key="rarity_one").options, ["노멀", "울트라 레어"])
+        self.assertEqual([(m.label, m.value) for m in app.metric],
+                         [("단가 (일본판)", "240원"), ("단가 (일본판)", "240원")])
+        self.assertEqual(len(app.expander), 2)
+        table = app.dataframe[0].value
+        self.assertEqual(list(table["단가(원)"]), [240])
+        self.assertEqual(list(table["합계(원)"]), [1200])
+        self.assertNotIn("가격 수록 번호", table.columns)
+        app.checkbox(key="export_price_card_number").check().run()
+        self.assertEqual(list(app.dataframe[0].value["가격 수록 번호"]), ["15AY-JPB22"])
+        self.assertEqual(self.fetch.call_count, 1)
+        self.collect.assert_not_called()
+        self.assert_downloads(app, True)
+        app.checkbox(key="confirmed").check().run()
+        self.assertFalse(app.exception)
+        self.assert_downloads(app, False)
+
+    def test_rarity_switch_never_reuses_previous_price_and_resets_confirmation(self):
+        app = self.start()
+        app.checkbox(key="confirmed").check().run()
+        app.selectbox(key="rarity_one").set_value("UR").run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.checkbox(key="confirmed").value)
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
+        self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
+        self.assertEqual(app.selectbox(key="rarity_one").options, ["노멀", "울트라 레어"])
+        self.assertEqual(app.metric[0].value, "수집 실패")
+        self.assert_downloads(app, True)
+
+    def test_missing_prices_attempt_collection_and_show_actual_failure_not_zero_or_sold_out(self):
+        self.failure = price_store.PriceNotFound("not captured")
+        app = self.start()
+        self.assertEqual(app.metric[0].value, "수집 실패")
+        self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
+        self.assertEqual(self.collect.call_count, 1)
+        self.assertEqual(self.collect.call_args.args[:2], ("15AY-JPB22", "ja"))
+        visible = " ".join(e.value for kind in ("caption", "info", "warning", "markdown")
+                           for e in app.get(kind))
+        self.assertIn("수집", visible)
+
+    def test_separate_field_distinguishes_stock_expiry_and_backend_failures(self):
+        cases = [("in_stock", price_store.StalePriceError("expired proof"), "collection_failed"),
+                 ("in_stock", price_store.PriceDatabaseError("db proof"), "database_error"),
+                 ("in_stock", price_store.PriceCacheError("cache proof"), "cache_error")]
+        seen = set()
+        for stock, failure, status in cases:
+            with self.subTest(status=status):
+                self.stock, self.failure = stock, failure
+                app = self.start()
+                self.assertEqual(list(app.dataframe[0].value["가격 상태"]), [status])
+                self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
+                self.assertEqual(app.selectbox(key="rarity_one").options, ["노멀", "울트라 레어"])
+                self.assertNotEqual(app.metric[0].value, "가격 미수집")
+                seen.add(app.metric[0].value)
+        self.assertEqual(len(seen), 3)
+
+    def test_sold_out_and_unknown_show_numeric_price_and_visible_availability(self):
+        for stock, status, label in [('out_of_stock', 'out_of_stock', '품절'),
+                                     ('unknown', 'stock_unknown', '재고 확인 불가')]:
+            with self.subTest(stock=stock):
+                self.stock = stock
+                app = self.start([row(quantity=3)])
+                self.assertEqual(app.metric[0].value, '240원')
+                visible = ' '.join(element.value for kind in ('caption', 'warning', 'info') for element in app.get(kind))
+                self.assertIn(label, visible)
+                self.assertEqual(list(app.dataframe[0].value['가격 상태']), [status])
+                self.assertEqual(list(app.dataframe[0].value['단가(원)']), [240])
+                self.assertEqual(list(app.dataframe[0].value['합계(원)']), [720])
+                self.collect.assert_not_called()
+                app.checkbox(key='confirmed').check().run()
+                self.assertTrue(app.checkbox(key='confirmed').value)
+                self.assert_downloads(app, False)
+
+    def test_stock_change_with_same_price_resets_confirmation(self):
+        self.stock = 'out_of_stock'
+        app = self.start(show_status=False)
+        app.checkbox(key='confirmed').check().run()
+        self.stock = 'unknown'
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.checkbox(key='confirmed').value)
+        self.assertEqual(app.metric[0].value, '240원')
+        self.assertNotIn('가격 상태', app.dataframe[0].value.columns)
+        self.assertTrue(any('재고 확인 불가' in c.value for c in app.caption))
+
+    def test_locale_is_independent_of_export_name_language(self):
+        app = self.start()
+        app.checkbox(key="confirmed").check().run()
+        app.radio(key="price_locale").set_value("한국판").run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.checkbox(key="confirmed").value)
+        self.assertEqual(list(app.dataframe[0].value["카드명"]), [NAME_KO])
+        self.assertNotIn("가격 판본", app.dataframe[0].value.columns)
+        self.assertEqual(self.collect.call_args.args[:2], ("SD6-KR030", "ko"))
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
+        self.assertEqual(app.metric[0].label, "단가 (한국판)")
+
+    def test_price_change_and_expiry_each_reset_confirmation_without_losing_card(self):
+        app = self.start()
+        app.checkbox(key="confirmed").check().run()
+        self.cost = 300
+        app.run()
+        self.assertFalse(app.checkbox(key="confirmed").value)
+        self.assertEqual(list(app.dataframe[0].value["단가(원)"]), [300])
+        self.assertEqual(app.metric[0].value, "300원")
+        self.assertEqual(app.selectbox(key="rarity_one").value, "N")
+        self.assertEqual(app.selectbox(key="rarity_one").options, ["노멀", "울트라 레어"])
+        app.checkbox(key="confirmed").check().run()
+        self.failure = price_store.StalePriceError("twelve hours passed")
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.checkbox(key="confirmed").value)
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
+        self.assertEqual(list(app.dataframe[0].value["카드명"]), [NAME_KO])
+        self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
+        app.checkbox(key="confirmed").check().run()
+        self.assert_downloads(app, False)
+
+    def test_mapping_failure_is_visible_exported_and_explicit_retry_recovers(self):
+        self.fetch.side_effect = card_prices.OfficialPrintError("wrong CID evidence")
+        app = self.start()
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["official_error"])
+        self.assertIn("wrong CID evidence", " ".join(e.value for e in app.markdown))
+        self.fetch.side_effect = None
+        self.fetch.return_value = [{"pid": 1, "card_number": "15AY-JPB22", "rid": 1}]
+        retries = [b for b in app.button if "수록" in b.label and ("다시" in b.label or "재" in b.label)]
+        self.assertEqual(len(retries), 1)
+        retries[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["ok"])
+
+    def test_missing_config_does_not_trigger_official_or_shop_queries(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            app = self.start()
+        self.fetch.assert_not_called()
+        self.read.assert_not_called()
+        self.collect.assert_not_called()
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["config_error"])
+
+    def test_missing_price_is_collected_saved_and_displayed_in_same_run(self):
+        self.failure = price_store.PriceNotFound("missing initially")
+        def stored(*args, **kwargs):
+            self.failure = None
+            self.cost = 520
+            return {"state": "stored", "snapshot_id": 20, "product_count": 1}
+        self.collect.side_effect = stored
+        app = self.start()
+        self.assertEqual(app.metric[0].value, "520원")
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["ok"])
+        self.assertEqual(list(app.dataframe[0].value["단가(원)"]), [520])
+        self.assertEqual(self.collect.call_count, 1)
+        visible = " ".join(e.value for kind in ("caption", "info", "warning", "markdown")
+                           for e in app.get(kind))
+        self.assertNotIn("수집 대기", visible)
+        self.assertNotIn("43200", visible)
+        self.assertNotIn("12시간 간격", visible)
+        app.checkbox(key="confirmed").check().run()
+        self.assertFalse(app.exception)
+        self.assertTrue(app.checkbox(key="confirmed").value)
+        self.assert_downloads(app, False)
+        self.assertEqual(self.collect.call_count, 1)
+
+    def test_failed_collection_is_visible_and_never_exports_old_amount(self):
+        self.failure = price_store.StalePriceError("old")
+        self.collection_state = {"state": "failed", "error": "HTTP 429 proof",
+                                 "attempted_at": datetime.now(timezone.utc)}
+        app = self.start()
+        self.assertEqual(app.metric[0].value, "수집 실패")
+        self.assertEqual(list(app.dataframe[0].value["가격 상태"]), ["collection_failed"])
+        self.assertTrue(app.dataframe[0].value["단가(원)"].isna().all())
+        self.assertIn("429", " ".join(e.value for e in app.markdown))
+
+    def test_price_options_control_preview_and_actual_downloads_without_changing_deck(self):
+        options = ("status", "product_url", "observed_at", "card_number")
+        labels = ("가격 상태", "상품 URL", "관찰 시각", "수록 번호")
+        headers = ("가격 상태", "가격 상품 URL", "가격 관찰 시각(KST)", "가격 수록 번호")
+        values = ("ok", "http://www.tcgshop.co.kr/goods_detail.php?goodsIdx=39577",
+                  datetime.fromisoformat(self.observed_at).astimezone(timezone(timedelta(hours=9))).isoformat(timespec="seconds"),
+                  "15AY-JPB22")
+        files = {}
+        with mock.patch.object(DeltaGenerator, "download_button", capture_downloads(files)):
+            app = self.start([row(quantity=3)], show_status=False)
+            original_rows = copy.deepcopy(app.session_state["rows"])
+            for field, label in zip(options, labels):
+                self.assertEqual(app.checkbox(key="export_price_" + field).label, label)
+                self.assertFalse(app.checkbox(key="export_price_" + field).value)
+            # Gray-code walk covers all 16 subsets, changing one checkbox each time.
+            previous_mask = 0
+            for step in range(16):
+                mask = step ^ (step >> 1)
+                with self.subTest(mask=mask):
+                    if step:
+                        bit = (mask ^ previous_mask).bit_length() - 1
+                        app.checkbox(key="export_price_" + options[bit]).set_value(bool(mask & (1 << bit))).run()
+                    self.assertFalse(app.exception)
+                    self.assertFalse(app.checkbox(key="confirmed").value)
+                    self.assert_downloads(app, True)
+                    selected = [i for i in range(4) if mask & (1 << i)]
+                    expected_headers = ["카드명", "레어도", "수량", "단가(원)", "합계(원)", *[headers[i] for i in selected]]
+                    expected_values = [NAME_KO, "노멀", 3, 240, 720, *[values[i] for i in selected]]
+                    self.assertEqual(list(app.dataframe[0].value.columns), expected_headers)
+                    self.assertEqual(app.dataframe[0].value.values.tolist(), [expected_values])
+                    app.checkbox(key="confirmed").check().run()
+                    self.assertTrue(app.checkbox(key="confirmed").value)
+                    self.assert_downloads(app, False)
+                    csv_rows = list(csv.reader(io.StringIO(files["csv"].decode("utf-8-sig"))))
+                    self.assertEqual(csv_rows, [expected_headers, [str(v) for v in expected_values]])
+                    sheet = load_workbook(io.BytesIO(files["xlsx"])).active
+                    self.assertEqual(list(sheet.values), [tuple(expected_headers), tuple(expected_values)])
+                    self.assertEqual(app.session_state["rows"], original_rows)
+                    previous_mask = mask
+        self.collect.assert_not_called()
+
+    def test_failed_request_is_not_repeated_by_confirmation_but_explicit_retry_can_recover(self):
+        self.failure = price_store.PriceNotFound("not collected")
+        app = self.start()
+        self.assertEqual(self.collect.call_count, 1)
+        app.checkbox(key="confirmed").check().run()
+        self.assertFalse(app.exception)
+        self.assertTrue(app.checkbox(key="confirmed").value)
+        self.assertEqual(self.collect.call_count, 1)
+        retries = [button for button in app.button
+                   if "가격" in button.label and ("다시" in button.label or "재시도" in button.label)]
+        self.assertEqual(len(retries), 1)
+
+        def stored(*args, **kwargs):
+            self.failure = None
+            self.cost = 520
+            return {"state": "stored", "snapshot_id": 21, "product_count": 1}
+
+        self.collect.side_effect = stored
+        retries[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(self.collect.call_count, 2)
+        self.assertEqual(app.metric[0].value, "520원")
+        self.assertFalse(app.checkbox(key="confirmed").value)
+
+    def test_actual_download_callback_rejects_price_that_expired_after_confirmation(self):
+        callbacks = {}
+        original = DeltaGenerator.download_button
+
+        def capture(container, label, data, *args, **kwargs):
+            if callable(data):
+                callbacks[kwargs["file_name"]] = data
+            return original(container, label, data, *args, **kwargs)
+
+        for stock in ('in_stock', 'out_of_stock', 'unknown'):
+            with self.subTest(stock=stock):
+                self.stock = stock
+                with mock.patch.object(DeltaGenerator, "download_button", capture):
+                    app = self.start()
+                    app.checkbox(key="confirmed").check().run()
+                self.assertEqual(set(callbacks), {"deck.csv", "deck.xlsx"})
+                self.assertTrue(callbacks["deck.csv"]().startswith(b"\xef\xbb\xbf"))
+                future = datetime.fromisoformat(self.observed_at) + timedelta(hours=12)
+                for build in callbacks.values():
+                    with mock.patch.dict(build.__globals__, {"datetime": SimpleNamespace(now=lambda tz: future)}):
+                        with self.assertRaisesRegex(ValueError, "만료"):
+                            build()
+
+
+if __name__ == "__main__":
+    unittest.main()

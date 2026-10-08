@@ -2,13 +2,17 @@
 
 import hashlib
 import io
+import os
 import uuid
+from datetime import datetime, timezone
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageOps
 
+import card_prices
 import catalog
 import exports
+import price_collector
 import rarities
 import recognition
 import references
@@ -16,6 +20,10 @@ import references
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 40_000_000
 LANGUAGES = {"한국어": "name_ko", "일본어": "name_ja", "영어": "name_en"}
+PRICE_LOCALES = {"일본판": "ja", "한국판": "ko"}
+# Price database settings come from the environment (compose.yaml); missing values show as a price status.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+REDIS_URL = os.environ.get("REDIS_URL")
 
 st.set_page_config(page_title="유희왕 덱 인식", layout="wide")
 state = st.session_state
@@ -26,6 +34,9 @@ state.setdefault("overlays", [])
 state.setdefault("export_fingerprint", None)
 state.setdefault("card_lookups", {})  # normalized English name -> {"card": ...} or {"error": ...}
 state.setdefault("rarity_lookups", {})  # official CID -> {"rarities": [...]} or {"error": ...}
+state.setdefault("official_prints", {})  # (official CID, locale) -> {"prints": [...]} or {"error": ...}
+state.setdefault("collection_failures", {})  # (card number, locale) -> failed price_collector outcome
+state.setdefault("price_retries", set())  # (official CID, rarity, locale) to collect again on this run
 
 
 @st.cache_resource(show_spinner=False)
@@ -75,6 +86,77 @@ def rarity_lookup(cid):
         except Exception as error:  # shown on the row; export stays blocked
             state.rarity_lookups[cid] = {"error": f"레어도 조회 실패 (CID {cid}): {type(error).__name__}: {error}"}
     return state.rarity_lookups[cid]
+
+
+def official_prints_lookup(cid, locale):
+    """Official prints with card numbers (card_prices.fetch_official_prints) as {"prints": [...]} or {"error": ...}.
+
+    Official data, not prices: cached for the session like rarity lookups; failures are retried only by the
+    explicit retry button.
+    """
+    key = (cid, locale)
+    if key not in state.official_prints:
+        try:
+            state.official_prints[key] = {"prints": card_prices.fetch_official_prints(cid, locale)}
+        except Exception as error:  # shown as the price status; the card stays exportable
+            state.official_prints[key] = {"error": f"공식 수록 정보 조회 실패 (CID {cid}, {locale}): "
+                                                   f"{type(error).__name__}: {error}"}
+    return state.official_prints[key]
+
+
+def price_of(cid, rarity):
+    """card_prices result for a card's rarity in the chosen edition, computed once per script run.
+
+    Prices are never kept across reruns, so every rerun reflects the price store's current state and expiry. A
+    missing or expired price is collected from the shop now. A failed collection is requested again only after the
+    card's "가격 수집 다시 시도" button; a verified empty search is reused for 12 hours and then searched again
+    automatically, or earlier with that button.
+    """
+    key = (cid, rarity)
+    if key not in price_results:
+        if not (DATABASE_URL and REDIS_URL):
+            # Without a price store there is nothing to match, so the official print list is not fetched either.
+            price_results[key] = card_prices.price_result(
+                "config_error", price_locale, "DATABASE_URL 또는 REDIS_URL 환경 변수가 설정되지 않았습니다.")
+            return price_results[key]
+        prints = official_prints_lookup(cid, price_locale)
+        if "error" in prints:
+            price_results[key] = card_prices.price_result("official_error", price_locale, prints["error"])
+        else:
+            # Only the rarity asked for here is collected, and only when its stored price is missing or expired.
+            retry_key = (cid, rarity, price_locale)
+            retry = retry_key in state.price_retries
+            state.price_retries.discard(retry_key)
+            price_results[key] = card_prices.price_with_collection(
+                rarity, price_locale, prints["prints"], price_observations, DATABASE_URL, REDIS_URL,
+                collect=collect_price, fetching=lambda number: st.spinner(f"TCGSHOP에서 {number} 가격 수집 중…"),
+                retry=retry)
+    return price_results[key]
+
+
+def collect_price(card_number, locale, database_url, fetching, retry):
+    """price_collector.collect_card_number, with a failed outcome kept for the session until an explicit retry."""
+    key = (card_number, locale)
+    if not retry and key in state.collection_failures:
+        return state.collection_failures[key]
+    outcome = price_collector.collect_card_number(card_number, locale, database_url, fetching, retry=retry)
+    if outcome["state"] == "failed":
+        state.collection_failures[key] = outcome
+    else:
+        state.collection_failures.pop(key, None)
+    return outcome
+
+
+def price_summary(result):
+    """Short value for the unit price field: the amount (in stock, sold out or stock unknown), or the status label
+    when there is no price."""
+    if result["status"] in card_prices.PRICED_STATUSES:
+        return f"{result['unit_price_krw']:,}원"
+    return card_prices.STATUS_LABELS[result["status"]]
+
+
+def kst(moment):
+    return moment.astimezone(exports.KST).strftime("%Y-%m-%d %H:%M KST")
 
 
 def is_reference(candidate):
@@ -201,9 +283,10 @@ def draw_overlay(image, results):
 
 
 st.title("유희왕 덱 사진 → 카드 목록")
-st.caption("사진은 이 컴퓨터에서만 처리되며 외부로 보내지 않습니다. 네트워크는 모델 최초 다운로드와 공식 카드 DB의 "
-           "카드 이름·공식 이미지(후보별 공식 일러스트 포함) 조회에만 사용됩니다. 레어도는 미리 준비한 로컬 공식 DB에서 "
-           "읽으며 조회할 때 접속하지 않습니다.")
+st.caption("사진은 이 앱을 실행하는 컴퓨터(서버 주소로 접속했다면 그 서버)로 전송되어 그곳에서만 처리되며, 그 밖의 외부로는 보내지 않습니다. 네트워크는 모델 최초 다운로드, 공식 카드 DB의 "
+           "카드 이름·공식 이미지(후보별 공식 일러스트 포함)·수록 번호 조회, 아래의 TCGSHOP 가격 수집 요청에 사용됩니다. 레어도는 미리 준비한 로컬 공식 DB에서 "
+           "읽습니다. 가격은 서버의 가격 DB를 먼저 읽고, 고른 레어도의 가격이 없거나 만료됐을 때만 서버가 TCGSHOP에 카드 번호 "
+           "검색을 요청합니다.")
 
 # --- 1. Model -------------------------------------------------------------
 if not recognition.models_ready():
@@ -367,6 +450,15 @@ for name, overlay, count in state.overlays:
 st.subheader("2. 카드 확인·수정")
 language = st.radio("내보낼 카드명 언어", list(LANGUAGES), horizontal=True)
 language_key = LANGUAGES[language]
+price_locale = PRICE_LOCALES[st.radio(
+    "가격 기준 판본 (실물 카드 언어)", list(PRICE_LOCALES), horizontal=True, key="price_locale",
+    help="가격을 찾을 실물 카드의 언어판입니다. 내보낼 카드명 언어와 별개입니다.")]
+st.info("가격은 서버 가격 DB에 저장된 TCGSHOP 상품을 먼저 읽습니다. 고른 레어도의 가격이 없거나 만료됐을 때만 바로 "
+        "상점에서 그 카드 번호를 검색해 저장한 뒤 DB에서 다시 읽습니다. 수집이 실패하면 **수집 실패**와 오류를 표시하고, "
+        "카드의 **가격 수집 다시 시도**를 누를 때까지 다시 요청하지 않습니다.")
+st.caption("검색 결과 첫 페이지만 수집하며, 검색 결과가 없으면 **상점 상품 없음**을 12시간 동안 표시합니다. 단가는 저장된 상품 중 재고 있음 상품의 최저가이고, 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품의 최저가를 그 표시와 함께 보여 줍니다. 전체 시장 최저가가 아닙니다. 공식 수록 번호·레어도가 "
+           "정확히 일치하는 상품만 연결하고, 관찰 후 12시간이 지난 가격은 쓰지 않습니다. 사유·수록 번호·상품·시각은 카드별 가격 "
+           "상세에 있습니다.")
 
 with st.form("add_card", clear_on_submit=True):
     st.write("카드 직접 추가 (영어 정식 카드명으로 공식 DB를 조회합니다)")
@@ -383,6 +475,20 @@ with st.form("add_card", clear_on_submit=True):
                                "crop": None, "candidates": [], "status": "manual", "choice": None,
                                "card": card, "error": None, "quantity": int(manual_quantity),
                                "name_override": ""})
+
+# Card numbers of every rarity a row can choose, looked up in the price store once for this run.
+price_results = {}
+price_numbers = set()
+for row in state.rows:
+    if row["card"] is None:
+        continue
+    row_rarities = rarity_lookup(row["card"]["cid"]).get("rarities")
+    if row_rarities and DATABASE_URL and REDIS_URL:
+        with st.spinner(f"공식 수록 번호 조회 중… (CID {row['card']['cid']})"):
+            prints = official_prints_lookup(row["card"]["cid"], price_locale)
+        if "prints" in prints:
+            price_numbers.update(card_prices.queryable_numbers(prints["prints"], price_locale, row_rarities))
+price_observations = card_prices.observe_card_numbers(price_numbers, price_locale, DATABASE_URL, REDIS_URL)
 
 if state.rows:
     st.caption("카드 자체가 틀렸다면 표시 이름을 고치지 말고, 인식 후보에서 다시 고르거나 삭제한 뒤 "
@@ -483,10 +589,36 @@ for row in list(state.rows):
                 if rarity_key not in state or row.get("rarity_options") != options:
                     state[rarity_key] = row["rarity"] if row["rarity"] in options else None
                     row["rarity_options"] = options
-                selected = edit_column.selectbox("레어도", options, format_func=rarities.RARITY_LABELS.__getitem__,
-                                                 key=rarity_key, placeholder="레어도를 선택하세요")
+                # Official rarity names only, so the options never change with prices; the price has its own field.
+                rarity_column, price_column = edit_column.columns(2)
+                selected = rarity_column.selectbox("레어도", options, format_func=rarities.RARITY_LABELS.__getitem__,
+                                                   key=rarity_key, placeholder="레어도를 선택하세요")
                 if selected is not None and selected != row["rarity"]:
                     row["rarity"] = selected
+                edition = {"ja": "일본판", "ko": "한국판"}[price_locale]
+                if row["rarity"] in options:
+                    price = price_of(card["cid"], row["rarity"])
+                    price_column.metric(f"단가 ({edition})", price_summary(price))
+                    if price["status"] in ("out_of_stock", "stock_unknown"):
+                        # The amount alone would read as a buyable price, so its availability is shown right below.
+                        price_column.caption(f"⚠️ **{card_prices.STATUS_LABELS[price['status']]}** — "
+                                             "재고가 확인된 상품이 없어 이 상품의 가격입니다")
+                    with edit_column.expander(f"가격 상세 — {card_prices.STATUS_LABELS[price['status']]}"):
+                        st.write(price["detail"])
+                        if price["status"] in card_prices.PRICED_STATUSES:
+                            st.write(f"수록 번호 {price['card_number']} · [상품 {price['product_id']}]({price['product_url']})")
+                            st.write(f"관찰 {kst(price['observed_at'])} · 만료 {kst(price['expires_at'])}")
+                    if price["status"] in ("collection_failed", "not_listed"):
+                        if edit_column.button("가격 수집 다시 시도", key=f"retry_price_{key}"):
+                            state.price_retries.add((card["cid"], row["rarity"], price_locale))
+                            st.rerun()
+                else:
+                    price_column.caption(f"단가 ({edition}): 레어도를 고르면 표시됩니다.")
+                if (card["cid"], price_locale) in state.official_prints \
+                        and "error" in state.official_prints[(card["cid"], price_locale)]:
+                    if edit_column.button("공식 수록 정보 다시 조회", key=f"retry_prints_{key}"):
+                        del state.official_prints[(card["cid"], price_locale)]
+                        st.rerun()
 
         name_column, quantity_column, delete_column = edit_column.columns([4, 1, 1])
         row["name_override"] = name_column.text_input(
@@ -506,7 +638,9 @@ for row in list(state.rows):
 
 # --- 4. Export ------------------------------------------------------------
 st.subheader("3. 내보내기")
-st.caption("기본 열은 카드명·레어도·수량이며, 고른 열이 그 뒤에 붙습니다. 카드는 메인 덱 몬스터 → 마법 → 함정 → "
+st.caption("기본 열은 카드명·레어도·수량·단가·합계이며, 고른 이름·CID 열은 수량 뒤에, 고른 가격 열(가격 상태·상품 URL·"
+           "관찰 시각·수록 번호)은 합계 뒤에 붙습니다. 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품의 최저가를 쓰고, "
+           "가격을 확인할 수 없는 줄은 금액을 비웁니다(가격 상태 열에 이유). 카드는 메인 덱 몬스터 → 마법 → 함정 → "
            "엑스트라 덱 몬스터 순으로 정렬되고, 같은 카드의 레어도는 낮은 것부터 이어집니다.")
 EXPORT_OPTION_LABELS = {"name_ko": "한국어 카드명", "name_ja": "일본어 카드명", "name_en": "영어 카드명", "cid": "CID"}
 optional_fields = []
@@ -514,13 +648,21 @@ for column, (field, label) in zip(st.columns(len(EXPORT_OPTION_LABELS)), EXPORT_
     if column.checkbox(label, key=f"export_{field}"):
         optional_fields.append(field)
 optional_fields = tuple(optional_fields)
+EXPORT_PRICE_OPTION_LABELS = {"status": "가격 상태", "product_url": "상품 URL", "observed_at": "관찰 시각",
+                              "card_number": "수록 번호"}
+optional_price_fields = []
+for column, (field, label) in zip(st.columns(len(EXPORT_PRICE_OPTION_LABELS)), EXPORT_PRICE_OPTION_LABELS.items()):
+    if column.checkbox(label, key=f"export_price_{field}"):
+        optional_price_fields.append(field)
+optional_price_fields = tuple(optional_price_fields)
 unresolved = [row for row in state.rows if problems_of(row, language_key)]
 cards = []
 export_error = None
 if state.rows and not unresolved:
     entries = [{"cid": row["card"]["cid"], "rarity": row["rarity"], "name": export_name(row, language_key),
                 "name_ko": row["card"]["name_ko"], "name_ja": row["card"]["name_ja"],
-                "name_en": row["card"]["name_en"], "quantity": row["quantity"]} for row in state.rows]
+                "name_en": row["card"]["name_en"], "quantity": row["quantity"],
+                "price": price_of(row["card"]["cid"], row["rarity"])} for row in state.rows]
     try:
         # Validation, aggregation and deck order all succeed or nothing is shown or downloadable.
         cards = exports.sort_cards(exports.aggregate(entries))
@@ -532,28 +674,54 @@ if unresolved:
 if export_error:
     st.error(export_error)
 if cards:
-    st.dataframe([dict(zip(exports.headers(optional_fields), exports.row_values(card, optional_fields)))
+    st.dataframe([dict(zip(exports.headers(optional_fields, include_price=True,
+                                           optional_price_fields=optional_price_fields),
+                           exports.row_values(card, optional_fields, include_price=True,
+                                              optional_price_fields=optional_price_fields)))
                   for card in cards], hide_index=True)
     st.write(f"총 {sum(card['quantity'] for card in cards)}장, {len({card['cid'] for card in cards})}종"
              f" (카드·레어도별 {len(cards)}줄)")
 
 # Any change to what would be exported (images, card identity, rarity, language, names, quantities,
-# added or deleted rows, selected optional columns, the prepared lines and their deck order, including a
-# failed preparation) clears the confirmation, so the user must confirm the final list again.
+# added or deleted rows, selected optional and price columns, the price edition, the prepared lines with their full
+# price record even where a column is not exported, their deck order, including a failed preparation) clears the
+# confirmation, so the user must confirm the final list again. A price that expires shows as a changed status
+# on the next run.
 # signature[:3]: the candidate review mode only matters through the recognized rows it produced.
-export_fingerprint = (signature[:3], language_key, optional_fields, tuple(
+export_fingerprint = (signature[:3], language_key, optional_fields, optional_price_fields, price_locale, tuple(
     (row["key"], row["choice"], row["card"] and row["card"]["cid"], row.get("rarity"), export_name(row, language_key),
      row["quantity"])
-    for row in state.rows), tuple((card["cid"], card["rarity"]) for card in cards))
+    for row in state.rows), tuple((card["cid"], card["rarity"], *exports.price_values(card)) for card in cards))
 if export_fingerprint != state.export_fingerprint:
     state.confirmed = False
     state.export_fingerprint = export_fingerprint
 confirmed = st.checkbox("모든 카드의 이름·수량·레어도를 직접 확인했습니다", key="confirmed", disabled=not cards)
 ready = bool(cards) and confirmed
+# The confirmed prices are valid only until the first of them expires; a later click fails instead of
+# downloading a price that is no longer current (the following rerun shows the expired status).
+price_valid_until = min((card["price"]["expires_at"] for card in cards
+                         if card["price"]["status"] in card_prices.PRICED_STATUSES), default=None)
+
+
+def confirmed_export(to_bytes, confirmed_cards, fields, price_fields, valid_until):
+    """Download callable (run on click) for exactly the confirmed lines and columns."""
+    def build():
+        if valid_until is not None and datetime.now(timezone.utc) >= valid_until:
+            raise ValueError("확인한 가격이 만료되었습니다. 화면의 가격 상태를 다시 확인하고 최종 확인을 다시 하세요.")
+        return to_bytes(confirmed_cards, fields, include_price=True, optional_price_fields=price_fields)
+    return build
+
+
 download_columns = st.columns(2)
 download_columns[0].download_button(
-    "Excel(XLSX) 다운로드", exports.to_xlsx_bytes(cards, optional_fields) if ready else b"", file_name="deck.xlsx",
+    "Excel(XLSX) 다운로드",
+    confirmed_export(exports.to_xlsx_bytes, cards, optional_fields, optional_price_fields, price_valid_until)
+    if ready else b"",
+    file_name="deck.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", disabled=not ready)
 download_columns[1].download_button(
-    "CSV 다운로드", exports.to_csv_bytes(cards, optional_fields) if ready else b"", file_name="deck.csv",
+    "CSV 다운로드",
+    confirmed_export(exports.to_csv_bytes, cards, optional_fields, optional_price_fields, price_valid_until)
+    if ready else b"",
+    file_name="deck.csv",
     mime="text/csv", disabled=not ready)

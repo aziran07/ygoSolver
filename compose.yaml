@@ -1,0 +1,107 @@
+# Price data layer: PostgreSQL price history + Redis 12-hour cache.
+# Neither database publishes a host port; only services on this project's
+# network can reach them. The price CLI runs on demand (profile "tools").
+# The web app (Streamlit) publishes WEB_BIND_IP:WEB_PORT for LAN access and
+# reads stored prices from PostgreSQL/Redis (it never imports or crawls). It
+# does not wait for them: if they are down, the app shows price error statuses.
+name: ygosolver
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ygosolver
+      POSTGRES_USER: ygosolver
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ygosolver -d ygosolver"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Cache only: bounded memory, entries carry their own absolute expiry.
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-ttl"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *logging
+
+  prices:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile.prices
+    image: ygosolver-prices:local
+    environment:
+      DATABASE_URL: postgresql://ygosolver:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/ygosolver
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./data/prices:/data/prices:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: ygosolver-web:local
+    restart: unless-stopped
+    ports:
+      - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8501}:8501"
+    environment:
+      DATABASE_URL: postgresql://ygosolver:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/ygosolver
+      REDIS_URL: redis://redis:6379/0
+    # Only the runtime data the app reads; host dirs must exist (owned by
+    # UID/GID 1000) so a missing provisioning step fails instead of Docker
+    # creating empty root-owned directories.
+    volumes:
+      - type: bind
+        source: ./data/models
+        target: /app/data/models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./data/references
+        target: /app/data/references
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./data/official_cards
+        target: /app/data/official_cards
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./data/catalog
+        target: /app/data/catalog
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./data/candidate_references
+        target: /app/data/candidate_references
+        bind: {create_host_path: false}
+    logging: *logging
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -3,10 +3,16 @@
 import copy
 import csv
 import io
+import os
 import unittest
 from unittest import mock
 
 from openpyxl import load_workbook
+from streamlit.delta_generator import DeltaGenerator
+from price_test_fixtures import capture_downloads
+
+PRICE_HEADERS = ['단가(원)', '합계(원)']
+PRICE_VALUES = [None, None]
 
 import exports
 import rarities
@@ -28,33 +34,30 @@ class ExportOptionsAppTest(unittest.TestCase):
         sort_patch.start()
         self.addCleanup(sort_patch.stop)
         self.files = {}
-
-        def record_file(format_name, writer):
-            def record(*args, **kwargs):
-                result = writer(*args, **kwargs)
-                self.files[format_name] = result
-                return result
-            return record
+        download_patch = mock.patch.object(DeltaGenerator, 'download_button', capture_downloads(self.files))
+        download_patch.start()
+        self.addCleanup(download_patch.stop)
+        environment = mock.patch.dict(os.environ, {'DATABASE_URL': '', 'REDIS_URL': ''})
+        environment.start()
+        self.addCleanup(environment.stop)
 
         for patch in (
             mock.patch.object(recognition, "models_ready", return_value=True),
             mock.patch.object(references, "library_info", return_value=None),
             mock.patch.object(rarities, "get_rarities", return_value=["N", "SR"]),
-            mock.patch.object(exports, "to_csv_bytes", side_effect=record_file("csv", exports.to_csv_bytes)),
-            mock.patch.object(exports, "to_xlsx_bytes", side_effect=record_file("xlsx", exports.to_xlsx_bytes)),
         ):
             patch.start()
             self.addCleanup(patch.stop)
 
     def assert_file_contents(self, app, indices):
-        headers = ["카드명", "레어도", "수량", *[self.headers[i] for i in indices]]
-        values = ["내 우라라", "슈퍼 레어", 3, *[self.values[i] for i in indices]]
+        headers = ["카드명", "레어도", "수량", *[self.headers[i] for i in indices], *PRICE_HEADERS]
+        values = ["내 우라라", "슈퍼 레어", 3, *[self.values[i] for i in indices], *PRICE_VALUES]
         self.assertFalse(app.exception)
         self.assertEqual(list(app.dataframe[0].value.columns), headers)
         self.assertEqual(app.dataframe[0].value.values.tolist(), [values])
         self.assertEqual(download_buttons_disabled(app), [False, False])
         csv_rows = list(csv.reader(io.StringIO(self.files["csv"].decode("utf-8-sig"))))
-        self.assertEqual(csv_rows, [headers, [str(value) for value in values]])
+        self.assertEqual(csv_rows, [headers, ["" if value is None else str(value) for value in values]])
         sheet = load_workbook(io.BytesIO(self.files["xlsx"])).active
         self.assertEqual(list(sheet.values), [tuple(headers), tuple(values)])
 

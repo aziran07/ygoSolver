@@ -1,8 +1,8 @@
 # 유희왕 덱 사진 → 카드 목록 (ygoSolver)
 
 덱 사진(JPG/PNG/WebP) 또는 카메라 촬영 사진에서 카드를 인식하고, 카드마다 눈으로 확인·수정한 뒤
-카드명·레어도·수량(선택하면 한국어/일본어/영어 이름·공식 CID도)이 덱 순서로 담긴 Excel(XLSX)과 CSV(UTF-8 BOM)로 내려받는 로컬 웹앱입니다.
-가격 정보는 아직 없습니다.
+카드명·레어도·수량(선택하면 한국어/일본어/영어 이름·공식 CID도)이 덱 순서로 담긴 Excel(XLSX)과 CSV(UTF-8 BOM)로 내려받는 웹앱입니다(Windows PC에서 직접 실행하거나 LAN 서버에서 Docker로 실행).
+앱 화면과 내보내기에는 서버 가격 DB에 저장된 TCGSHOP 상품 가격을 표시합니다. 고른 레어도의 가격이 없거나 만료됐으면 서버가 바로 그 카드 번호를 상점에서 검색해 저장한 뒤 DB에서 다시 읽습니다(아래 "앱의 가격 표시"·"필요할 때 가격 수집" 참고).
 
 ## 현재 기능 (2026-10-08)
 
@@ -12,13 +12,14 @@
 | 카드 확인·수정 | 한국어·일본어 이름으로 후보 표시, 후보 선택·수량·표시 이름 수정, 삭제와 영어 정식 이름으로 직접 추가 |
 | 공식 이름 조회 | 한국어·일본어·영어 이름과 CID 조회. 확인된 Reactor·Baybarron·The Fallen & The Virtuous 모델 이름 차이 처리, 조회 실패 이유 표시와 명시적 재조회 |
 | 레어도 선택 | 공식 한국어·일본어 판본에 있는 레어도 중 직접 선택. 해당 카드의 가장 낮은 레어도가 기본값이며, 같은 CID·레어도끼리 수량 합산 |
-| 내보내기 | XLSX와 UTF-8 BOM CSV. 기본은 카드명·레어도·수량, 한국어·일본어·영어 카드명과 CID는 각 체크박스를 켰을 때만 그 뒤에 포함. 메인 덱 몬스터 → 마법 → 함정 → 엑스트라 덱 몬스터 순(EDOPro식)으로 정렬 |
-| 최종 확인 | 이름·수량·레어도를 직접 확인한 뒤 다운로드. 카드 내용이나 내보내기 옵션을 바꾸면 최종 확인 해제 |
+| 가격 표시 | 카드마다 레어도 선택 상자(공식 레어도 이름만) 옆의 **단가 (일본판/한국판)** 칸에 고른 레어도의 가격: TCGSHOP에서 수집해 저장한 상품 중 재고 있음 상품의 최저가, 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품까지 포함한 최저가(단가 바로 아래에 **품절**/**재고 확인 불가** 표시), 가격이 없으면 짧은 상태(예: 가격 미수집). 수록 번호·상품·관찰/만료 시각·사유는 접히는 "가격 상세"에 표시. 공식 수록 번호·레어도가 정확히 일치하는 상품만 연결, 일본판(기본)/한국판 선택, 12시간 지난 가격은 쓰지 않음. 고른 레어도의 가격이 없거나 만료됐을 때만 카드 번호 검색으로 바로 수집(실패하면 "가격 수집 다시 시도" 버튼으로만 다시 요청) |
+| 내보내기 | XLSX와 UTF-8 BOM CSV. 기본은 카드명·레어도·수량, 한국어·일본어·영어 카드명과 CID는 각 체크박스를 켰을 때만 그 뒤에 포함, 그 뒤에 단가·합계. 가격 상태·상품 URL·관찰 시각·수록 번호는 각 체크박스를 켰을 때만 맨 뒤에 포함(가격 상세·판본은 내보내지 않음). 메인 덱 몬스터 → 마법 → 함정 → 엑스트라 덱 몬스터 순(EDOPro식)으로 정렬 |
+| 최종 확인 | 이름·수량·레어도를 직접 확인한 뒤 다운로드. 카드 내용, 내보내기 옵션(이름·CID·가격 열 선택), 가격 판본, 가격 값·상태(내보내지 않는 열 포함)가 바뀌면 최종 확인 해제 |
 
 최근 독립 작업 폴더의 전체 테스트는 **231개 실행, 230개 통과, 실패·오류 0, 건너뜀 1**입니다(2026-10-08).
 건너뛴 기존 실제 사진 테스트는 이 작업 폴더에 없는 `data/references`와 `userDataset`을 필요로 합니다.
 내보내기 열의 16가지 조합과 CSV/XLSX 실제 내용을 검증했으며, Streamlit AppTest로 미리보기·다운로드 일치와 최종 확인 해제를 확인했습니다.
-겹친 카드 누락, 강한 반사, 학습·참조 범위 밖 카드에는 한계가 있습니다. 스크린샷의 수량 배지 읽기, 사진에서 레어도 판별, 가격 조회는 구현하지 않았습니다.
+겹친 카드 누락, 강한 반사, 학습·참조 범위 밖 카드에는 한계가 있습니다. 스크린샷의 수량 배지 읽기, 사진에서 레어도 판별, 전체 상품 일괄 수집·예약 수집은 구현하지 않았습니다. 앱은 저장된 가격을 먼저 읽고, 없거나 만료된 가격만 카드 번호 검색으로 수집합니다(아래 "필요할 때 가격 수집").
 사진별 인식 결과와 검증 범위는 아래 평가 기록을 참고하세요.
 
 ## 저장소에 포함되는 것
@@ -60,6 +61,56 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 업로드는 서버에서 파일당 20MB로 제한되며(`maxUploadSize = 20`), 사용 통계 전송은 꺼져 있습니다.
 
 테스트: `.venv\Scripts\python -X utf8 -m unittest discover -s tests`
+
+## 서버 실행 (aziranserver, Docker)
+
+같은 앱을 서버 `aziranserver`의 `/home/pilon1945/ygoSolver`에서 컨테이너로 실행합니다(명령은 모두 이 저장소 루트에서).
+접속 주소: **http://192.168.1.122:8501** (같은 LAN 안에서만). HTTPS·로그인·도메인·인터넷 공개는 설정하지 않았습니다.
+올린 사진은 이 서버로 전송되어 처리됩니다.
+
+구성(`compose.yaml`의 `web`, 이미지 `ygosolver-web:local`, `Dockerfile.web`):
+
+- `python:3.12-slim-bookworm` + `requirements.txt`. 이미지에는 앱 `.py` 모듈, `requirements.txt`, `.streamlit/config.toml`,
+  `THIRD_PARTY_NOTICES.md`, `LICENSES/`만 들어갑니다(`.dockerignore` 허용 목록). `.env`, `.git`, `data/`, 테스트, 개인 사진은 넣지 않습니다.
+- UID/GID 1000(서버 소유자 `pilon1945`과 같음)의 비root 사용자, `WORKDIR /app`, `streamlit run app.py --server.headless=true --server.address=0.0.0.0 --server.port=8501`.
+  업로드 20MB 제한과 사용 통계 끄기는 `config.toml`을 그대로 씁니다. 컨테이너 안에서만 모든 인터페이스에서 듣고, 호스트에는 아래 주소로만 공개합니다.
+- 호스트 포트 `${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8501}` → 컨테이너 8501. 서버 `.env`에 `WEB_BIND_IP=192.168.1.122`, `WEB_PORT=8501`이 있습니다
+  (없으면 서버 자신에서만 접속 가능). 이 주소에만 바인딩하므로 서버 안에서도 `localhost:8501`이 아니라 LAN 주소로 접속합니다.
+- `/_stcore/health` healthcheck(파이썬 표준 `urllib`), `restart: unless-stopped`, 로그 회전(json-file 10MB × 3).
+- 가격 DB(PostgreSQL/Redis)에 같은 Compose 네트워크로 접속해 저장된 가격을 읽고, 없거나 만료된 가격은 "필요할 때 가격 수집" 규칙으로 TCGSHOP에 요청해 저장합니다. 접속 정보는 `DATABASE_URL`(비밀번호는 `.env`의
+  `POSTGRES_PASSWORD`로 Compose가 채움)과 `REDIS_URL` 환경 변수로만 받으며, `.env` 파일 자체는 연결하지 않습니다. 가격 DB를 기다리지 않고
+  시작하므로 DB가 멈춰 있어도 인식·내보내기는 동작하고 가격 열에 오류 상태가 표시됩니다.
+
+데이터(이미지에 넣지 않고 호스트 디렉터리를 연결). **컨테이너를 만들기 전에 모두 있어야 하며**, 없으면 Docker가 빈 디렉터리를 만들지 않고 `up`이 실패합니다:
+
+| 호스트 경로 | 컨테이너 경로 | 모드 | 내용 |
+| --- | --- | --- | --- |
+| `data/models` | `/app/data/models` | 읽기 전용 | DRAW2 모델 3개 |
+| `data/references` | `/app/data/references` | 읽기 전용 | 공식 참조 이미지 라이브러리 |
+| `data/official_cards` | `/app/data/official_cards` | 읽기 전용 | 공식 카드·레어도 DB `official_cards.sqlite` |
+| `data/catalog` | `/app/data/catalog` | 쓰기 | 공식 이름 조회 캐시 |
+| `data/candidate_references` | `/app/data/candidate_references` | 쓰기 | 후보별 공식 일러스트 캐시 |
+
+`data/prices`, `.env`, 개인 사진, 저장소 전체는 연결하지 않습니다. 모든 디렉터리와 파일은 UID/GID 1000 소유여야 합니다
+(`chown -R 1000:1000 data/models data/references data/official_cards data/catalog data/candidate_references`, 쓰기 디렉터리는 `u+rwX`).
+컨테이너는 이 데이터를 만들거나 내려받지 않으므로 Windows 작업 폴더의 같은 경로에서 서버로 복사해 둡니다.
+`data/models`가 읽기 전용이라 모델이 없으면 화면의 다운로드 버튼은 쓰기 오류로 실패합니다. 모델·라이브러리·DB가 없거나 손상되면 앱이 기존 오류 메시지를 그대로 표시합니다.
+공식 이름 조회와 후보별 공식 일러스트 다운로드는 이 서버에서 공식 카드 DB에 접속합니다.
+
+명령:
+
+```sh
+docker compose build web                 # 이미지 만들기 (앱 코드를 바꾼 뒤에도 필요)
+docker compose up -d web                 # 시작/재생성 (postgres·redis는 건드리지 않음)
+docker compose ps web                    # 상태 (healthy 확인)
+docker compose logs -f --tail=100 web    # 로그
+docker compose restart web               # 재시작
+curl -s http://192.168.1.122:8501/_stcore/health   # "ok"
+```
+
+코드 갱신: `git pull`(해당 브랜치) → `docker compose build web` → `docker compose up -d web`.
+데이터만 바꾼 경우(모델·라이브러리·DB 교체)에는 `docker compose restart web`으로 앱이 다시 읽게 합니다.
+중지는 `docker compose stop web`입니다. 볼륨을 지우는 `down -v`는 가격 DB 데이터를 지우므로 쓰지 마세요.
 
 ## 첫 실행: 모델 다운로드 (약 427MB)
 
@@ -185,6 +236,228 @@ DRAW2가 잘라낸 카드 사진을 이 PC에 등록해 둔 **공식 카드 DB �
 - 레어도 DB가 없거나 불완전·손상되었거나, 카드가 DB 스냅숏에 없으면 이유를 보여 주고 그 카드는 내보낼 수 없습니다
   (임의의 레어도로 채우지 않음). 결과는 세션 동안 저장되며 **레어도 다시 조회** 버튼으로만 다시 읽습니다.
 
+### 카드 가격 (TCGSHOP, `prices.py`) — 첫 수집만
+
+이미 받아 둔 TCGSHOP 상품 목록 응답 한 페이지를 로컬 SQLite(`data/prices/tcgshop.sqlite`, git 제외)에 저장합니다.
+`prices.py`는 **상점에 접속하지 않습니다**. 자동 수집 일정·클라우드 실행은 없습니다. 서버의 앱은 아래 PostgreSQL에 저장한 같은 데이터를 읽습니다.
+
+```powershell
+.venv\Scripts\python prices.py import --html data\experiments\tcgshop_prices\ja_list.bin --metadata data\experiments\tcgshop_prices\ja_list.json --db data\prices\tcgshop.sqlite
+```
+
+- 입력: 응답 원본(EUC-KR 바이트)과 메타데이터 JSON(`url`, `observed_at`, `status_code`, `sha256`, `bytes`).
+  상태 200, 파일 크기·SHA-256 일치, 시간대가 있는 과거 `observed_at`, 허용된 목록 URL이 아니면 아무것도 저장하지 않고 실패합니다.
+- 언어: 목록 분류 `Index=288` = 일본판(`ja`), `Index=276` = 한국판(`ko`). 수록 번호의 `JP`/`KR`이 분류와 다르면 실패합니다.
+- 상품마다 저장: 상품 ID(`goodsIdx`), 화면 표시 이름, 수록 번호(예: `15AY-JPB22`), 레어도 표기(비어 있지 않은 표기를 모두 공백으로 이어 붙임),
+  **실제 판매가**(취소선 정가 아님, 원 단위 정수), 재고 상태와 근거, 상품 URL. 상품 ID가 다르면 같은 카드 번호라도 별도 상품입니다
+  (예: `YAC1-JP002` PSC OverFrame 28,000원 / UR OverFrame 6,000원). 공식 CID·이름과 연결하지 않습니다.
+- 재고: 목록의 장바구니 버튼(`go_cart.gif`, 같은 상품 ID의 `cartOneGo`)과 양수 구매 제한 수가 있으면 `in_stock`,
+  `품절` 표기가 있으면 `out_of_stock`, 그 밖에는 `unknown`. 이것은 **목록 화면의 표시**이며 실제 주문 가능 여부를 확인한 것이 아닙니다.
+  구매 제한 수(`comparechk_limitCnt`)는 근거로만 남기며 실제 재고 수량이 아닙니다. 실제 품절 상품 응답은 아직 확보하지 못했습니다.
+- 표: `snapshots`(URL, 언어, 범위 `single_list_page`, 원래 관찰 시각, 상태, SHA-256, 크기) 1행과 `price_observations`(스냅숏별 상품 1행).
+  같은 URL·관찰 시각·해시를 다시 가져오면 아무것도 바꾸지 않고, 같은 URL·시각에 다른 해시면 실패합니다.
+  항목 하나라도 잘못되면(이름·번호·레어도·가격 누락, 상품 ID 중복, 링크/장바구니 ID 불일치, 재고 표시 모순) 전체가 실패하고 기존 행은 그대로입니다.
+- 범위와 요청 간격: 현재 데이터는 일본판 목록 **한 페이지**(56개 상품, 2026-10-08 07:19 UTC)이며 전체 상품 목록이 아닙니다.
+  TCGSHOP `robots.txt`는 전체 사이트에 `Crawl-delay: 43200`(요청 사이 12시간)을 명시합니다. 앱의 카드별 수집은 이 간격을 적용하지 않습니다(아래 "필요할 때 가격 수집").
+
+### 가격 DB 서버 (PostgreSQL + Redis, `price_store.py`)
+
+같은 TCGSHOP 응답 원본을 서버의 PostgreSQL에 가격 이력으로 저장하고, 카드 번호별 조회 결과를 Redis에 최대 12시간 캐시합니다.
+검증은 위 `prices.py`의 `load_snapshot`/`parse_tcgshop_list`를 그대로 씁니다. `price_store.py` 자체는 상점에 접속하지 않습니다. 앱의 필요 시 수집(`price_collector.py`)이 쓰는 상점 요청 간격 표와 시도 기록도 이 DB에 있습니다.
+공식 카드 SQLite는 그대로이며 이 DB와 연결하지 않습니다(CID·이름 매핑을 추측하지 않음).
+
+구성(`compose.yaml`, 프로젝트 이름 `ygosolver`):
+
+- `postgres`: `postgres:17-bookworm`, 볼륨 `ygosolver_postgres-data` → `/var/lib/postgresql/data`.
+- `redis`: `redis:7-alpine`, 볼륨 `ygosolver_redis-data` → `/data`, 최대 256MB(`volatile-ttl`). 캐시이므로 비어도 다음 조회에서 다시 채워집니다.
+- 둘 다 healthcheck, `restart: unless-stopped`, 로그 회전(json-file 10MB × 3)이며 **호스트 포트를 열지 않습니다**.
+- `prices`(profile `tools`): `Dockerfile.prices`로 만든 CLI 이미지. `prices.py`, `price_store.py`, `requirements-prices.txt`만 들어가며
+  (`.dockerignore` 허용 목록) 비root 사용자(UID 10001)로 실행합니다. 호스트의 `./data/prices`만 `/data/prices`에 읽기 전용으로 연결합니다.
+
+현재 서버 위치: `aziranserver`의 `/home/pilon1945/ygoSolver`(아래 명령은 모두 이 저장소 루트에서 실행).
+
+처음 설정(`.env`는 git 제외; 이미 있으면 덮어쓰지 않음, 비밀번호를 화면에 출력하지 않음).
+`prices.py`/`price_store.py`를 바꾼 뒤에도 `docker compose build prices`로 이미지를 다시 만들어야 반영됩니다:
+
+```sh
+test -e .env || (umask 077 && printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)" > .env)
+chmod 600 .env
+docker compose build prices            # CLI 이미지 ygosolver-prices:local
+docker compose up -d postgres redis
+docker compose ps                      # 둘 다 (healthy)
+docker compose run --rm prices init    # 표 생성·요청 간격 표 준비(반복 실행해도 안전, 기존 간격은 바꾸지 않음)
+```
+
+가져오기와 조회(`DATABASE_URL`/`REDIS_URL`은 compose가 `.env`로 채움):
+
+```sh
+docker compose run --rm prices import --html /data/prices/captures/ja_list.bin --metadata /data/prices/captures/ja_list.json
+docker compose run --rm prices get --card-number YAC1-JP002 --locale ja
+```
+
+- 표: `price_snapshots`(URL, 언어, 범위, 원래 `observed_at`, 상태, SHA-256, 크기; `(source_url, observed_at)` 고유)와
+  `price_observations`(스냅숏별 상품 1행: 상품 ID, 이름, 수록 번호, 언어, 레어도 표기, 판매가(원), 재고 상태·근거, 상품 URL).
+  스냅숏 하나는 한 트랜잭션으로 저장되어 전부 들어가거나 전혀 들어가지 않습니다. 같은 원본 재입력은 0행, 같은 URL·시각에 다른 해시면 실패합니다.
+- `get` 결과: `card_number`, `locale`, `scope: "observed_products"`, `prices`(상품별 필드 + `observed_at`), `expires_at`, `cache_status`(`hit`/`miss`).
+  **정확히 같은** 수록 번호 + 언어의 상품만 모으고 레어도별 상품을 따로 둡니다(예: `YAC1-JP002` PSC 28,000원 / UR 6,000원).
+  상품마다 `observed_at`이 가장 늦은 관찰을 쓰므로, 나중에 가져온 더 오래된 원본이 최신 가격을 덮지 않습니다.
+  이것은 **가져온 목록에서 관찰된 상품**일 뿐 TCGSHOP 전체 재고나 전체 판본을 뜻하지 않습니다.
+- 실패(종료 코드 1, `<단계> failed: <오류 종류>: <내용>`; 접속 비밀번호는 `***`로 가림):
+  기록 없음 `PriceNotFound`, 그룹 안 상품 하나라도 관찰 후 12시간이 지났으면 `StalePriceError`(일부만 돌려주지 않음),
+  미래 시각·잘못된 번호/언어(`JP`=ja, `KR`=ko)·손상된 캐시·PostgreSQL 또는 Redis 장애는 `PriceError`.
+  어떤 실패도 오래된 값이나 SQLite로 대신하지 않고, 없음·만료·오류 결과는 캐시하지 않습니다.
+- 캐시: 키 `ygosolver:prices:v1:{locale}:{card_number}:r{revision}`. revision은 그 번호·언어를 포함한 가장 큰 스냅숏 ID이며,
+  새 가져오기는 새 키를 만들 뿐 기존 키를 지우지 않습니다. 만료는 그룹의 가장 이른 `observed_at` + 12시간의 **절대 시각**(`SET PXAT`)이라
+  키를 지워 다시 채워도 남은 시간만 유지됩니다. 캐시 적중 때도 revision 확인을 위해 PostgreSQL에 색인 조회 1회를 합니다.
+  캐시 값은 식별자·revision·상품 필드·가격·재고 상태·시간대·만료 시각을 모두 검사하고, 맞지 않으면 실패합니다(자동 삭제하지 않음).
+
+운영:
+
+```sh
+docker compose logs --tail 100 postgres redis
+docker compose restart postgres redis
+docker compose up -d --force-recreate postgres redis   # 데이터는 이름 있는 볼륨에 남음 (down -v 금지)
+```
+
+백업은 git 제외 경로인 `data/prices/backups/`에 소유자만 읽을 수 있게 저장합니다:
+
+```sh
+install -d -m 700 data/prices/backups
+(umask 077 && docker compose exec -T postgres pg_dump -U ygosolver -d ygosolver --format=custom \
+  > data/prices/backups/ygosolver-prices.dump)
+```
+
+복원은 기존 가격 표를 덤프 내용으로 바꾸고, 그 뒤 Redis 캐시를 비웁니다. 복원 후 snapshot ID(revision)가 다시 쓰이면
+옛 캐시 키가 새 데이터와 같은 이름이 될 수 있으므로, **복원과 `FLUSHDB`가 끝날 때까지 `get` 등 가격 조회를 멈추고 접근을 막으세요**.
+`--exit-on-error`라 첫 오류에서 멈추고 0이 아닌 종료 코드를 돌려주며, `--single-transaction`이라 실패하면 기존 표가 그대로 남습니다(이때 캐시는 비우지 않음):
+
+```sh
+docker compose exec -T postgres pg_restore -U ygosolver -d ygosolver --clean --if-exists --exit-on-error --single-transaction \
+  < data/prices/backups/ygosolver-prices.dump \
+  && docker compose exec -T redis redis-cli FLUSHDB
+```
+
+검증(상점에 접속하지 않음). 실제 DB 통합 테스트는 일회용 DB `ygosolver_test_*`와 Redis DB 15를 쓰며 운영 DB는 건드리지 않습니다.
+접속 주소는 컨테이너 안에서 `DATABASE_URL`로 만들어 비밀번호를 출력하지 않습니다:
+
+```sh
+docker compose exec -T postgres createdb -U ygosolver ygosolver_test_prices
+docker compose run --rm --no-deps -T -v "$PWD/tests:/app/tests:ro" --entrypoint sh prices -c \
+  'TEST_DATABASE_URL="${DATABASE_URL%/ygosolver}/ygosolver_test_prices" TEST_REDIS_URL=redis://redis:6379/15 \
+   python -m unittest discover -s tests -p test_price_store.py -v'
+docker compose exec -T postgres dropdb -U ygosolver ygosolver_test_prices
+docker compose exec -T redis redis-cli -n 15 FLUSHDB
+```
+
+운영 데이터 점검 `tests/acceptance_price_stack.py`는 이 서버에 옮겨 둔 원본(`data/prices/captures/ja_list.bin`·`ja_list.json`·`tcgshop.sqlite`)과
+PostgreSQL의 56개 상품·캐시 TTL을 비교합니다(DB는 읽기만 하고 Redis 캐시는 채울 수 있음). `--recreate`를 붙이면 postgres/redis 컨테이너를 다시 만든 뒤에도 데이터와 캐시가 남는지 확인합니다:
+
+```sh
+python3 tests/acceptance_price_stack.py              # 읽기 전용 점검
+python3 tests/acceptance_price_stack.py --recreate   # 컨테이너 재생성 포함
+```
+
+현재 한계: 저장된 실제 데이터는 일본판 목록 **한 페이지 56개 상품**(관찰 2026-10-08 07:19:37 UTC, 2026-10-08 19:19:37 UTC에 만료)뿐입니다.
+그 뒤에는 새 응답을 가져올 때까지 `get`이 `StalePriceError`로 실패합니다. 한국판 실데이터, 실제 품절 응답, 전체 카탈로그는 없습니다.
+
+### 필요할 때 가격 수집 (`price_collector.py`)
+
+앱에서 카드의 **고른 레어도** 가격이 `not_observed`(저장된 상품 없음) 또는 `expired`일 때만, 그 레어도가 수록된 공식 수록 번호를
+상점에서 바로 검색해 저장합니다. 이미 유효한 가격(재고 있음·품절·재고 확인 불가 모두)이 있거나 DB·캐시·데이터·설정·공식 정보 오류일 때는 상점에 요청하지 않습니다.
+앱 시작이나 다른 레어도 때문에 요청하지 않습니다. 번호가 여러 개이면 만료된 번호, 저장된 적 없는 번호 순서로 하나씩 차례로 요청합니다.
+
+- **요청 간격 없음**: 앱 전체 요청 제한이 없으며 TCGSHOP robots.txt의 전체 `Crawl-delay: 43200`은 적용하지 않습니다. 저장된 가격의 12시간 유효 기간은 그대로입니다.
+  가끔 고르는 카드 하나의 가격만 요청하며 전체 상품 수집·예약 수집은 하지 않습니다. 이전 버전의 `price_collection_gate` 표는 더 만들거나 읽지 않으며,
+  이미 있는 표와 행은 지우지 않고 그대로 둡니다(남은 다음 가능 시각은 새 요청을 막지 않습니다).
+- **경로**: 목록 페이지의 분류 내 검색(`sortForm`의 검색 버튼 `goodsSort()`가 여는 `goods_list.php?data=&Index=288|276&searchstring=<수록 번호>`).
+  robots.txt가 `goods_list.php`만 허용하고 나머지는 금지하므로 `search_result.php`는 쓰지 않습니다.
+  2026-10-08 실제 일본판 검색 응답 3건(SLF1-JP081 상품 3개, RV01-JP069 상품 1개, 없는 번호 SLF1-JP999 결과 없음)으로 확인했습니다
+  (원본은 Git 제외 `data/experiments/on_demand_prices`). **한국판(Index 276) 검색 응답은 아직 확인하지 않았습니다.**
+- **시도 기록**: 요청 전에 `price_collection_attempts`에 `pending` 시도를 기록하고, 결과에 따라 `stored`·`empty`·`failed`로 바꿉니다.
+  기록하지 못하면(PostgreSQL 오류) 요청하지 않습니다. `init`이 `empty` 결과를 위한 제약 조건을 옮기며 기존 행은 지우거나 바꾸지 않습니다.
+- **요청**: GET 한 번, 리다이렉트를 따르지 않고 자동 재시도·대기 없음(연결 5초·읽기 20초 제한). 다시 요청은 "가격 수집 다시 시도" 버튼으로만 합니다. 200이 아닌 응답(리다이렉트·403·429 포함), HTML이 아닌 응답,
+  EUC-KR이 아닌 본문은 실패이며, 실패하면 그 레어도의 나머지 번호도 요청하지 않습니다.
+- **결과 검증**: 페이지의 `sortForm`이 `goods_list.php`이고 분류 `Index`가 판본과 같으며 검색어 칸에 요청한 수록 번호가 그대로 있어야 하고,
+  상품 블록은 기존 목록 파서로 엄격하게 읽으며 **모든 상품의 수록 번호가 요청한 번호와 같아야** 합니다. 상품 블록이 없을 때는
+  `<!-- 상품 목록 시작 -->`·`<!-- 상품 목록 끝 -->` 주석이 하나씩 있고 그 사이가 실제 빈 검색 결과와 같은 빈 줄뿐이어야
+  "검색 결과 없음"(`empty`)이고, 그 밖의 상품 없는 페이지는 실패입니다.
+- **저장**: 검증된 응답은 범위 `card_number_search_first_page` 스냅숏 하나로 저장되며, 같은 트랜잭션에서 시도가 `stored`로 바뀝니다.
+  그 뒤 PostgreSQL/Redis에서 다시 읽어 위의 엄격한 레어도 연결로 가격을 냅니다. 검색 결과 **첫 페이지만** 저장하며 전체 상품을 보장하지 않습니다.
+  수집했지만 고른 레어도 상품이 없으면 `not_observed`이며, 다른 레어도 상품을 대신 쓰지 않습니다. 실제 검색에서 장바구니 버튼이 없는 상품
+  (예: SLF1-JP081 3개, `./upload/no_good_img` 표시)은 재고 `unknown`이며(품절로 추정하지 않음), 재고가 확인된 상품이 없으면 그 가격이 `stock_unknown`으로 표시됩니다.
+- **실패·결과 없음**: 실패하면 `collection_failed`(시각과 오류)이며, 그 번호의 마지막 시도가 실패면 화면을 다시 그려도 다시 요청하지 않습니다.
+  검색 결과가 없으면 `not_listed`이며 12시간 동안 그 결과를 다시 씁니다. 둘 다 카드의 **가격 수집 다시 시도** 버튼을 누르면 그 레어도의 번호를 다시 요청합니다.
+  예약 작업·백그라운드 작업은 없습니다.
+
+배포 순서: 코드 변경 후 `docker compose build prices web`, **`docker compose run --rm prices init`으로 표를 먼저 만든 뒤** `docker compose up -d web`.
+`init`은 배포 전에 반드시 실행해야 합니다. 시도 기록 표(`price_collection_attempts`)가 `empty`(검색 결과 없음) 결과를 받도록 옮기기 때문이며,
+이를 건너뛰면 기존 설치에서는 상점 요청 뒤 검색 결과 없음을 기록할 때 실패(`database_error`)할 수 있습니다.
+
+### 앱의 가격 표시 (`card_prices.py`)
+
+앱은 위 PostgreSQL/Redis에 저장된 관찰값을 읽고, 없거나 만료된 가격만 위 "필요할 때 가격 수집" 규칙으로 수집합니다. 상품과 카드는 아래 순서의 **검증된 공식 정보로만** 연결합니다.
+
+1. **공식 수록 번호**: 카드의 공식 상세 페이지(`card_search.action?ope=2&cid=<CID>&request_locale=ja|ko`)를 카드·판본마다 세션당 한 번 읽어
+   수록 상품·수록 번호(예: `15AY-JPB22`)·레어도(rid)를 얻습니다. 요청한 주소에서 리다이렉트되지 않았는지, `og:locale`이 판본과 같은지,
+   카드 이미지의 CID가 요청한 CID인지, 카드명이 로컬 공식 DB의 그 판본 이름과 같은지, (상품, 레어도) 목록이 로컬 공식 DB와 정확히 같은지 모두 확인하며,
+   하나라도 다르면 가격 상태 `official_error`로 표시합니다(공식 DB가 바뀐 경우 `inventory.py`·`rarities.py`로 다시 만들어야 함). **공식 수록 정보 다시 조회** 버튼으로만 다시 시도합니다.
+   `rarity_prints.code`는 레어도 코드이므로 수록 번호로 쓰지 않습니다.
+2. **상품 연결**: 고른 레어도가 그 판본에 수록된 번호마다 가격 DB를 조회하고, 상점의 레어도 표기가 아래 표의 rid 중 **그 번호에 공식으로 수록된 rid 하나와만**
+   맞는 상품만 그 레어도로 봅니다. 상품명·유사 문자열로는 연결하지 않습니다.
+
+   | 상점 표기 | 공식 레어도(rid) |
+   | --- | --- |
+   | `Normal` | 노멀(1) |
+   | `Rare` | 레어(2) |
+   | `Super Rare` | 슈퍼 레어(3) |
+   | `Ultra Rare` | 울트라 레어(4) |
+   | `Secret Rare` | 시크릿 레어(5) 또는 SPECIAL BLUE/RED Ver.(43, 50) — 같은 번호에 둘 이상 있으면 연결하지 않음 |
+   | `Ultimate Rare` | 얼티미트 레어(6) |
+   | `Collectors Rare` | 컬렉터즈 레어(16) |
+   | `Prismatic Secret Rare` | 프리즈마틱 시크릿 레어(36) 또는 SUMI-E BLACK Ver.(58) — 같은 번호에 둘 이상 있으면 연결하지 않음 |
+
+   저장된 상품에 실제로 나온 표기와 저장한 목록 페이지의 레어도 필터(`select name="Rare"`)에 있는 표기만 넣었습니다. `UR OverFrame`, `PSC OverFrame`처럼 공식 DB가 구분하지 않는 표기나 그 밖의 표기는 **확인 불가**로 두고 어떤 레어도로도 바꾸지 않습니다.
+3. **가격 선택**: 연결된 상품 중 재고 상태가 `in_stock`인 상품이 있으면 그 최저가(`ok`)이며, 품절·재고 불명 상품은 더 싸도 쓰지 않습니다.
+   재고가 확인된(`in_stock`) 상품이 하나도 없을 때만 연결된 모든 상품(`out_of_stock`·`unknown` 포함)의 최저가를 고르고, 고른 상품의 재고에 따라
+   `out_of_stock`(품절) 또는 `stock_unknown`(재고 확인 불가)이 됩니다. 같은 가격이면 수록 번호, 상품 ID 순입니다.
+   고른 상품의 가격·수록 번호·상품 URL·관찰/만료 시각을 그대로 씁니다.
+   **수집해 저장한 상품만 기준**이며 전체 시장 최저가가 아닙니다.
+
+**가격 기준 판본**(일본판 기본/한국판)은 화면에서 고르며 내보낼 카드명 언어와 별개입니다. 판본은 덱 전체에 하나입니다.
+카드마다 레어도 선택 상자에는 공식 레어도 이름만 나오고, 그 옆 **단가 (판본)** 칸에 고른 레어도의 단가(원) 또는 가격이 없는 짧은 상태가 나옵니다.
+품절·재고 확인 불가 상품의 단가이면 단가 바로 아래에 **품절** 또는 **재고 확인 불가**가 함께 보입니다.
+사유·수록 번호·상품 링크·관찰/만료 시각은 그 아래 접히는 **가격 상세**에 있습니다. 레어도를 바꾸면 단가가 바로 바뀌고 최종 확인이 해제됩니다.
+저장된 가격이 없거나 만료된 레어도는 위 수집 규칙에 따라 수집하거나 "상점 상품 없음"/"수집 실패"로 표시합니다. 현재 저장된 범위는 가격 DB의 `price_observations`에서 확인하세요.
+가격은 화면을 다시 그릴 때마다 가격 DB에서 다시 읽고 세션에 보관하지 않습니다. 관찰 후 12시간이 지나면 `expired`가 됩니다.
+
+가격 상태(내보내기에서 고를 수 있는 '가격 상태' 열 값). `ok`·`out_of_stock`·`stock_unknown`은 단가·합계·수록 번호·상품 URL·관찰 시각을 채우고,
+그 밖의 상태는 단가·합계·관찰 시각을 비우며 0이나 이전 값을 넣지 않습니다. 가격 상태는 내보내기를 막지 않습니다.
+
+| 상태 | 뜻 |
+| --- | --- |
+| `ok` | 연결된 재고 있음 상품의 최저가 |
+| `out_of_stock` | 화면 표시 "품절". 재고가 확인된 상품이 없어 고른 최저가 상품이 목록에 품절로 표시됨. 단가는 그 품절 상품의 판매가 |
+| `stock_unknown` | 화면 표시 "재고 확인 불가". 재고가 확인된 상품이 없어 고른 최저가 상품의 재고를 목록에서 확인할 수 없음(장바구니 버튼이 없다는 것만으로 품절로 보지 않음). 단가는 그 상품의 판매가 |
+| `not_observed` | 화면 표시 "가격 미수집". 그 카드·판본·레어도의 상품 가격이 가격 DB에 저장되어 있지 않음(수집할 번호가 없거나 수집한 검색 결과에 그 레어도가 없음). 품절·0원이 아니며 오류도 아님 |
+| `unverified` | 그 번호에 관찰 상품은 있지만 레어도 표기를 확인할 수 없음 |
+| `no_edition_print` | 그 판본에 이 레어도 수록이 없음 |
+| `no_card_number` | 수록은 있지만 조회할 수 있는 지역 수록 번호가 없음(예: 초기 일본판 `303-053`, 번호 없는 수록) |
+| `expired` | 관찰 후 12시간 경과 |
+| `database_error` / `cache_error` | PostgreSQL / Redis 연결·조회 실패 |
+| `data_error` | 가격 DB·캐시 데이터 손상 등 그 밖의 가격 데이터 오류 |
+| `config_error` | `DATABASE_URL`·`REDIS_URL`이 없음(이때는 공식 상세 페이지도 읽지 않음) |
+| `official_error` | 공식 수록 정보 조회·검증 실패 |
+| `not_listed` | 화면 표시 "상점 상품 없음". 수록 번호 검색 결과에 상품이 없음(확인한 빈 결과, 12시간 유효). 상세에 번호와 검색 시각 |
+| `collection_failed` | 화면 표시 "수집 실패". 그 번호의 이번 또는 마지막 수집 요청이 실패(HTTP 오류·리다이렉트·403·429·응답 형식·검색어/분류 불일치 등). 상세에 시각과 오류. "가격 수집 다시 시도"로만 다시 요청 |
+
+레어도 하나가 여러 수록 번호에 있으면 번호 하나라도 만료·오류이면 그 상태가 결과이며, 나머지 번호만으로 최저가를 내지 않습니다.
+가격 열은 수량(및 선택한 추가 열) 뒤에 항상 `단가(원)`, `합계(원)`(단가 × 합산 수량)이 붙습니다. 내보내기 영역의
+**가격 상태 / 상품 URL / 관찰 시각 / 수록 번호** 체크박스(기본 해제)를 켜면 그 뒤에 `가격 상태`, `가격 상품 URL`,
+`가격 관찰 시각(KST)`(예: `2026-10-08T16:19:37+09:00`), `가격 수록 번호` 열이 몇 개를 고르든 이 순서로 추가됩니다.
+가격 상세와 가격 판본은 화면에만 표시하고 내보내지 않습니다(판본은 화면에서 고른 가격 기준 판본).
+가격 상태 열을 빼더라도 상태가 바뀌면(예: 재고 있음 → 품절, 만료) 최종 확인이 해제됩니다.
+최종 확인 후 가격(`ok`·`out_of_stock`·`stock_unknown` 모두)이 만료된 상태에서 다운로드 버튼을 누르면 파일을 만들지 않고 실패하며, 다시 그린 화면에서 확인이 해제됩니다.
+
 ## 사용 순서
 
 1. **사진 올리기** — 여러 장 가능. 파일당 최대 20MB, 최대 4천만 화소. 휴대폰 사진의 EXIF 회전은 자동 보정됩니다.
@@ -204,12 +477,14 @@ DRAW2가 잘라낸 카드 사진을 이 PC에 등록해 둔 **공식 카드 DB �
 4. **내보내기** — 같은 공식 CID·같은 레어도의 카드는 수량이 합산되고, 같은 카드라도 레어도가 다르면 다른 줄로 나뉩니다
    (같은 CID의 줄들은 카드명이 같아야 합니다). 화면의 "N장, M종"에서 종 수는 서로 다른 CID 수이며 줄 수는 따로 표시됩니다.
    확인이 필요한 카드(레어도 미선택·조회 실패 포함)가 남아 있거나 "모든 카드의 이름·수량·레어도를 직접 확인했습니다"를 체크하지 않으면 다운로드 버튼이 비활성화됩니다.
-   체크한 뒤 사진·후보·레어도·언어·표시 이름·수량·추가 열 선택을 바꾸거나 카드를 추가·삭제하면 체크가 풀리므로 다시 확인해야 합니다.
+   체크한 뒤 사진·후보·레어도·언어·표시 이름·수량·추가 열·가격 열 선택·가격 판본을 바꾸거나 카드를 추가·삭제하거나, 내보낼 가격 값·상태가 바뀌면(만료 포함) 체크가 풀리므로 다시 확인해야 합니다.
    정렬 결과(줄 순서)가 바뀌거나 정렬 정보를 읽지 못한 경우에도 체크가 풀립니다.
-   XLSX/CSV와 화면 미리보기 열은 기본으로 **카드명, 레어도, 수량** 3개이며 레어도는 한국어로 표시합니다.
+   XLSX/CSV와 화면 미리보기 열은 기본으로 **카드명, 레어도, 수량** 3개와 맨 뒤의 **단가(원), 합계(원)**(위 "앱의 가격 표시")이며 레어도는 한국어로 표시합니다.
    내보내기 영역의 **한국어 카드명 / 일본어 카드명 / 영어 카드명 / CID** 체크박스(기본 해제)를 각각 켜면 해당 열이
    수량 뒤에 추가되며, 몇 개를 고르든 순서는 항상 카드명, 레어도, 수량, 한국어 이름, 일본어 이름, 영어 이름, 공식 CID입니다.
-   선택은 화면을 다시 그려도 유지되고 미리보기·XLSX·CSV에 똑같이 적용됩니다. CID 열을 빼도 합산은 항상 공식 CID·레어도 기준입니다.
+   **가격 상태 / 상품 URL / 관찰 시각 / 수록 번호** 체크박스(기본 해제)는 합계 뒤에 가격 상태, 가격 상품 URL, 가격 관찰 시각(KST),
+   가격 수록 번호 순으로 열을 추가합니다. 가격 상세·가격 판본은 내보내지 않습니다.
+   두 선택은 화면을 다시 그려도 유지되고 미리보기·XLSX·CSV에 똑같이 적용됩니다. CID 열을 빼도 합산은 항상 공식 CID·레어도 기준입니다.
 
    **줄 순서**(미리보기·XLSX·CSV 공통, 정렬 옵션 없음)는
    [EDOPro의 정렬 기준](https://github.com/edo9300/edopro/blob/c250b6ab9bebb6eca9fdd07ee0c5bd2278426e81/gframe/data_manager.cpp#L668-L725)을 참고합니다(`deck_order.py`).
@@ -249,9 +524,12 @@ DRAW2가 잘라낸 카드 사진을 이 PC에 등록해 둔 **공식 카드 DB �
   반사가 심해 그림이 가려진 카드는 일치하지 않고 DRAW2 결과로 남습니다. 같은 카드를 기본 일러스트만 등록하면
   다른 일러스트 카드는 찾지 못할 수 있습니다(아래 평가 참고).
 - 공식 이미지 비교는 느립니다. 라이브러리를 불러오는 데 몇 초가 걸리고 카드마다 비교 시간이 더해지며, 속도는 아직 개선 중이라 확정 수치를 적지 않습니다.
-- 사진은 외부로 업로드되지 않습니다. 인식은 이 컴퓨터의 CPU(onnxruntime, OpenCV)에서 실행됩니다.
-  네트워크는 모델 최초 다운로드, 공식 이름 조회, 참조 라이브러리 등록(`references.py`), 후보별 공식 일러스트 다운로드,
-  공식 목록·레어도 DB 준비(`inventory.py`·`rarities.py`)에만 쓰입니다. 앱은 레어도를 로컬 DB에서만 읽습니다.
+- 사진은 앱을 실행하는 컴퓨터로만 보내지고 그 밖의 외부로는 업로드되지 않습니다. 인식은 그 컴퓨터의 CPU(onnxruntime, OpenCV)에서 실행됩니다.
+  Windows에서 직접 실행하면 이 PC 안에서만 처리되지만, **서버(아래 "서버 실행")로 접속하면 올린 사진이 같은 LAN의 HTTP로 그 서버에 전송되어 처리됩니다**(암호화·로그인 없음).
+  네트워크는 모델 최초 다운로드, 공식 이름 조회, 공식 상세 페이지의 수록 번호 조회(가격 연결용), 참조 라이브러리 등록(`references.py`), 후보별 공식 일러스트 다운로드,
+  공식 목록·레어도 DB 준비(`inventory.py`·`rarities.py`), 서버 가격 DB 읽기와 고른 레어도의 가격이 없거나 만료됐을 때의 TCGSHOP 카드 번호 검색에만 쓰입니다. 앱은 레어도를 로컬 DB에서만 읽습니다.
+- **가격은 수집해 저장한 상품만 기준입니다.** 고른 레어도의 수록 번호 검색 결과 첫 페이지만 저장하므로 전체 시장 최저가가 아니며,
+  관찰 12시간 뒤에는 다시 수집합니다. 한국판 검색 응답은 아직 실제로 확인하지 않았습니다.
 
 ### 실제로 확인한 것 vs 일반 정확도
 
