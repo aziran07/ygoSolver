@@ -8,6 +8,7 @@
 # Web app image (Dockerfile.web)
 !app.py
 !card_prices.py
+!price_collector.py
 !catalog.py
 !deck_order.py
 !exports.py

@@ -110,6 +110,17 @@ class MinimumPriceTest(unittest.TestCase):
         q = self.quote(rarity="UR")
         self.assertEqual(q["status"], "not_observed")
         self.assertIsNone(q["unit_price_krw"])
+
+    def test_verified_shop_rarity_names_map_to_same_official_finish_only(self):
+        for rarity, rid, shop_label in (("R", 2, "Rare"), ("SR", 3, "Super Rare"),
+                                       ("UR", 4, "Ultra Rare")):
+            with self.subTest(rarity=rarity):
+                prints = [{"pid": 1, "card_number": "15AY-JPB22", "rid": rid}]
+                self.groups = {"15AY-JPB22": group("15AY-JPB22", [product(rarity=shop_label, price=700)])}
+                q = self.quote(rarity=rarity, prints=prints)
+                self.assertEqual((q["status"], q["unit_price_krw"]), ("ok", 700))
+                self.groups = {"15AY-JPB22": group("15AY-JPB22", [product(rarity=shop_label + " OverFrame")])}
+                self.assertEqual(self.quote(rarity=rarity, prints=prints)["status"], "unverified")
         q = self.quote(locale="ko", prints=[{"pid": 10, "card_number": "SD6-KR030", "rid": 1}])
         self.assertEqual(q["status"], "not_observed")
         self.assertIsNone(q["unit_price_krw"])

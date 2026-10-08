@@ -104,7 +104,8 @@ def official_prints_lookup(cid, locale):
 def price_of(cid, rarity):
     """card_prices result for a card's rarity in the chosen edition, computed once per script run.
 
-    Prices are never kept across reruns, so every rerun reflects the price store's current state and expiry.
+    Prices are never kept across reruns, so every rerun reflects the price store's current state and expiry. A
+    missing or expired price is collected from the shop when the global 12-hour request gate allows it.
     """
     key = (cid, rarity)
     if key not in price_results:
@@ -117,14 +118,17 @@ def price_of(cid, rarity):
         if "error" in prints:
             price_results[key] = card_prices.price_result("official_error", price_locale, prints["error"])
         else:
-            price_results[key] = card_prices.card_price(rarity, price_locale, prints["prints"], price_observations,
-                                                        (DATABASE_URL, REDIS_URL))
+            # Only the rarity asked for here is collected, and only when its stored price is missing or expired.
+            price_results[key] = card_prices.price_with_collection(
+                rarity, price_locale, prints["prints"], price_observations, DATABASE_URL, REDIS_URL,
+                fetching=lambda number: st.spinner(f"TCGSHOP에서 {number} 가격 수집 중…"))
     return price_results[key]
 
 
 def price_summary(result):
+    """Short value for the unit price field: the amount, or the status label when there is no price."""
     if result["status"] == "ok":
-        return f"수집 상품 최저 {result['unit_price_krw']:,}원"
+        return f"{result['unit_price_krw']:,}원"
     return card_prices.STATUS_LABELS[result["status"]]
 
 
@@ -256,9 +260,10 @@ def draw_overlay(image, results):
 
 
 st.title("유희왕 덱 사진 → 카드 목록")
-st.caption("사진은 이 앱을 실행하는 컴퓨터(서버 주소로 접속했다면 그 서버)로 전송되어 그곳에서만 처리되며, 그 밖의 외부로는 보내지 않습니다. 네트워크는 모델 최초 다운로드와 공식 카드 DB의 "
-           "카드 이름·공식 이미지(후보별 공식 일러스트 포함)·수록 번호 조회에만 사용됩니다. 레어도는 미리 준비한 로컬 공식 DB에서 "
-           "읽으며, 가격은 서버의 가격 DB에 저장된 관찰값만 읽고 상점에 접속하지 않습니다.")
+st.caption("사진은 이 앱을 실행하는 컴퓨터(서버 주소로 접속했다면 그 서버)로 전송되어 그곳에서만 처리되며, 그 밖의 외부로는 보내지 않습니다. 네트워크는 모델 최초 다운로드, 공식 카드 DB의 "
+           "카드 이름·공식 이미지(후보별 공식 일러스트 포함)·수록 번호 조회, 아래의 TCGSHOP 가격 수집 요청에 사용됩니다. 레어도는 미리 준비한 로컬 공식 DB에서 "
+           "읽습니다. 가격은 서버의 가격 DB를 먼저 읽고, 고른 레어도의 가격이 없거나 만료됐을 때만 서버가 TCGSHOP에 카드 번호 "
+           "검색을 요청합니다(앱 전체 12시간에 한 번).")
 
 # --- 1. Model -------------------------------------------------------------
 if not recognition.models_ready():
@@ -425,8 +430,13 @@ language_key = LANGUAGES[language]
 price_locale = PRICE_LOCALES[st.radio(
     "가격 기준 판본 (실물 카드 언어)", list(PRICE_LOCALES), horizontal=True, key="price_locale",
     help="가격을 찾을 실물 카드의 언어판입니다. 내보낼 카드명 언어와 별개입니다.")]
-st.caption("가격은 TCGSHOP에서 수집해 저장한 상품만 기준으로 한 재고 있음 상품의 최저가이며, 전체 시장 최저가가 아닙니다. "
-           "공식 DB의 수록 번호와 레어도가 정확히 일치하는 상품만 연결하고, 관찰 후 12시간이 지난 가격은 쓰지 않습니다.")
+st.info("가격은 서버 가격 DB에 저장된 TCGSHOP 상품을 먼저 읽습니다. 고른 레어도의 가격이 없거나 만료됐을 때만 상점에서 "
+        "그 카드 번호를 검색해 수집하는데, 상점 robots.txt에 따라 앱 전체에서 **12시간에 한 번만** 요청할 수 있어 "
+        "그 전에는 **수집 대기**와 다음 가능 시각을 표시합니다.")
+st.caption("다음 가능 시각이 지난 뒤 화면을 다시 열거나 새로 고칠 때 수집을 시도하며, 예약 작업은 없습니다. 검색 결과 첫 페이지만 "
+           "수집합니다. 단가는 저장된 상품 중 재고 있음 상품의 최저가이며 전체 시장 최저가가 아닙니다. 공식 수록 번호·레어도가 "
+           "정확히 일치하는 상품만 연결하고, 관찰 후 12시간이 지난 가격은 쓰지 않습니다. 사유·수록 번호·상품·시각은 카드별 가격 "
+           "상세에 있습니다.")
 
 with st.form("add_card", clear_on_submit=True):
     st.write("카드 직접 추가 (영어 정식 카드명으로 공식 DB를 조회합니다)")
@@ -557,25 +567,23 @@ for row in list(state.rows):
                 if rarity_key not in state or row.get("rarity_options") != options:
                     state[rarity_key] = row["rarity"] if row["rarity"] in options else None
                     row["rarity_options"] = options
-                option_labels = {option: f"{rarities.RARITY_LABELS[option]} · {price_summary(price_of(card['cid'], option))}"
-                                 for option in options}
-                # As with the candidate box, the browser keeps the label it last received for the selection, so
-                # a changed price label resends the current selection.
-                if row.get("rarity_option_labels") != option_labels:
-                    current = state.get(rarity_key)
-                    state[rarity_key] = current if current in options else None
-                    row["rarity_option_labels"] = option_labels
-                selected = edit_column.selectbox("레어도", options, format_func=option_labels.__getitem__,
-                                                 key=rarity_key, placeholder="레어도를 선택하세요")
+                # Official rarity names only, so the options never change with prices; the price has its own field.
+                rarity_column, price_column = edit_column.columns(2)
+                selected = rarity_column.selectbox("레어도", options, format_func=rarities.RARITY_LABELS.__getitem__,
+                                                   key=rarity_key, placeholder="레어도를 선택하세요")
                 if selected is not None and selected != row["rarity"]:
                     row["rarity"] = selected
+                edition = {"ja": "일본판", "ko": "한국판"}[price_locale]
                 if row["rarity"] in options:
                     price = price_of(card["cid"], row["rarity"])
-                    text = f"가격 ({'일본판' if price_locale == 'ja' else '한국판'}): {price_summary(price)} — {price['detail']}"
-                    if price["status"] == "ok":
-                        text += (f" · 수록 번호 {price['card_number']} · [상품 {price['product_id']}]({price['product_url']})"
-                                 f" · 관찰 {kst(price['observed_at'])} · 만료 {kst(price['expires_at'])}")
-                    edit_column.caption(text)
+                    price_column.metric(f"단가 ({edition})", price_summary(price))
+                    with edit_column.expander(f"가격 상세 — {card_prices.STATUS_LABELS[price['status']]}"):
+                        st.write(price["detail"])
+                        if price["status"] == "ok":
+                            st.write(f"수록 번호 {price['card_number']} · [상품 {price['product_id']}]({price['product_url']})")
+                            st.write(f"관찰 {kst(price['observed_at'])} · 만료 {kst(price['expires_at'])}")
+                else:
+                    price_column.caption(f"단가 ({edition}): 레어도를 고르면 표시됩니다.")
                 if (card["cid"], price_locale) in state.official_prints \
                         and "error" in state.official_prints[(card["cid"], price_locale)]:
                     if edit_column.button("공식 수록 정보 다시 조회", key=f"retry_prints_{key}"):

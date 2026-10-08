@@ -7,53 +7,68 @@ A shop product is tied to a card only through verified official data:
 2. get_card_price() looks up the stored shop observations (price_store) for the card numbers printed in the chosen
    rarity, and keeps only products whose exact shop rarity label maps to that one official rid at that number.
 Shop product names are never used, there is no fuzzy matching, and rarity_prints.code is a rarity code, not a card
-number. This module never contacts the shop.
+number. card_price() never contacts the shop.
 
-The result covers the products seen in imported listing snapshots only: it is the lowest price among the observed
-in-stock products, not the lowest price of the whole market.
+price_with_collection() adds on-demand collection for one selected rarity: only when its stored price is missing
+or expired, it asks price_collector to fetch the search page of one missing card number (when the global 12-hour
+shop request gate allows), stores it, reads it back from PostgreSQL/Redis and maps it with the same strict rules.
+
+The result covers the stored products only (listing snapshots and first search result pages): it is the lowest
+price among the observed in-stock products, not the lowest price of the whole market.
 """
 
 import re
 import sqlite3
-from contextlib import closing
-from datetime import datetime, timezone
+from contextlib import closing, nullcontext
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import catalog
+import price_collector
 import price_store
 import rarities
 
 LOCALES = ("ja", "ko")
 OG_LOCALES = {"ja": "ja_JP", "ko": "ko_KR"}
 REGIONS = {"ja": "JP", "ko": "KR"}
+KST = timezone(timedelta(hours=9), "KST")
+# Statuses for which the selected rarity's missing or expired card numbers are collected from the shop.
+COLLECTABLE_STATUSES = ("not_observed", "expired")
 OG_LOCALE_PATTERN = re.compile(r'<meta property="og:locale" content="([^"]*)"')
 
-# Exact TCGSHOP rarity labels -> the official rids that label can name. Only labels seen in stored listings are
-# listed. A label naming several rids (the shop does not spell the colour variants) maps to a product only when
-# exactly one of them is printed at that card number. Any other label ("UR OverFrame", "PSC OverFrame", ...) is
-# unverified: the official database does not separate those finishes, so they are never coerced to a rarity.
+# Exact TCGSHOP rarity labels -> the official rids that label can name. Only labels seen on stored products or in the
+# rarity filter (select name="Rare") of the stored listing page are listed. A label naming several rids (the shop does
+# not spell the colour variants) maps to a product only when exactly one of them is printed at that card number. Any
+# other label ("UR OverFrame", "PSC OverFrame", ...) is unverified: the official database does not separate those
+# finishes, so they are never coerced to a rarity.
 SHOP_RARITY_LABELS = {
     "Normal": {1},
+    "Rare": {2},
+    "Super Rare": {3},
+    "Ultra Rare": {4},
     "Secret Rare": {5, 43, 50},
     "Ultimate Rare": {6},
     "Collectors Rare": {16},
     "Prismatic Secret Rare": {36, 58},
 }
 
-# Status -> short Korean label shown in the app. Only "ok" carries a price.
+# Status -> short Korean label shown in the app's price field; the result's "detail" explains it. Only "ok" carries
+# a price. Exports keep the status keys, not these labels.
 STATUS_LABELS = {
     "ok": "수집 상품 최저가",
-    "no_stock": "관찰 상품 모두 품절·재고 불명",
-    "not_observed": "관찰된 상품 없음",
-    "unverified": "레어도 대응 확인 불가 상품만 있음",
-    "no_edition_print": "이 판본에 없는 레어도",
-    "no_card_number": "조회 가능한 수록 번호 없음",
-    "expired": "가격 만료 (관찰 후 12시간 경과)",
+    "no_stock": "품절·재고 불명",
+    "not_observed": "가격 미수집",
+    "unverified": "레어도 확인 불가",
+    "no_edition_print": "이 판본에 없음",
+    "no_card_number": "수록 번호 없음",
+    "expired": "가격 만료",
     "database_error": "가격 DB 오류",
     "cache_error": "가격 캐시 오류",
     "data_error": "가격 데이터 오류",
     "config_error": "가격 DB 설정 없음",
-    "official_error": "공식 수록 정보 조회 실패",
+    "official_error": "공식 수록 조회 실패",
+    "collection_wait": "수집 대기",
+    "collection_failed": "수집 실패",
 }
 
 
@@ -269,8 +284,9 @@ def card_price(rarity, locale, official_prints, observations, redact_urls=()):
         return price_result("unverified", locale,
                             f"수록 번호 {', '.join(numbers)}에 관찰한 상품이 있지만 상점 레어도 표기가 {label}인지 "
                             f"확인할 수 없습니다{note}", **counts)
-    return price_result("not_observed", locale, f"수록 번호 {', '.join(numbers)}의 {edition} {label} 상품을 "
-                                                f"관찰한 적이 없습니다 (수집한 상품만 조회){note}", **counts)
+    return price_result("not_observed", locale, f"수록 번호 {', '.join(numbers)}의 {edition} {label} 상품 가격이 가격 DB에 "
+                                                f"저장되어 있지 않습니다. 품절이나 0원이 아니라 수집한 상품(목록 페이지·카드 번호 "
+                                                f"검색 결과 첫 페이지) 중에 이 레어도가 없다는 뜻입니다{note}", **counts)
 
 
 def get_card_price(cid, rarity, locale, official_prints, database_url, redis_url):
@@ -283,3 +299,88 @@ def get_card_price(cid, rarity, locale, official_prints, database_url, redis_url
     numbers = queryable_numbers(official_prints, locale, [rarity])
     observations = observe_card_numbers(numbers, locale, database_url, redis_url)
     return card_price(rarity, locale, official_prints, observations, (database_url, redis_url))
+
+
+def kst_text(moment):
+    return moment.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
+
+
+def missing_reason(observation, now):
+    """Why a card number's stored price cannot be used ("never collected" / "expired"), or None if it can."""
+    if "not_found" in observation:
+        return "저장된 가격 없음"
+    if "error" in observation:
+        return "저장된 가격 만료" if isinstance(observation["error"], price_store.StalePriceError) else None
+    observed_times = [datetime.fromisoformat(product["observed_at"]) for product in observation["observed"]["prices"]]
+    return "저장된 가격 만료" if min(observed_times) + price_store.PRICE_LIFETIME <= now else None
+
+
+def numbers_to_collect(rarity, locale, official_prints, observations):
+    """Queryable card numbers of the rarity whose stored price is missing or expired: expired ones first (an expired
+    group keeps invalidating the whole result until it is refreshed), then never collected ones, each by number."""
+    now = datetime.now(timezone.utc)
+    reasons = {number: missing_reason(observations[number], now)
+               for number in queryable_numbers(official_prints, locale, [rarity])}
+    return sorted((number for number, reason in reasons.items() if reason is not None),
+                  key=lambda number: (reasons[number] != "저장된 가격 만료", number))
+
+
+def waiting_result(number, reason, locale, outcome):
+    """collection_wait / collection_failed result for a number the gate did not let us request now."""
+    next_time = kst_text(outcome["next_allowed_at"])
+    attempt = outcome["last_attempt"]
+    if attempt is not None and attempt["outcome"] == "failed":
+        return price_result("collection_failed", locale,
+                            f"{number}: {reason}. {kst_text(attempt['reserved_at'])} 상점 수집 실패 — {attempt['error']}. "
+                            f"상점 요청 간격(12시간) 때문에 다음 시도는 {next_time} 이후입니다")
+    previous = ""
+    if attempt is not None and attempt["outcome"] == "pending":
+        previous = f" {kst_text(attempt['reserved_at'])}에 시작한 수집은 결과가 아직 기록되지 않았습니다(진행 중이거나 중단됨)."
+    elif attempt is not None:
+        previous = f" 마지막 수집 {kst_text(attempt['reserved_at'])}."
+    return price_result("collection_wait", locale,
+                        f"{number}: {reason}.{previous} 상점 요청 간격(robots.txt 12시간, 앱 전체 공유) 때문에 지금은 "
+                        f"수집하지 않습니다. {next_time} 이후 화면을 다시 열거나 새로 고치면 수집을 시도합니다"
+                        "(예약 작업이 아닙니다)")
+
+
+def price_with_collection(rarity, locale, official_prints, observations, database_url, redis_url,
+                          collect=None, fetching=nullcontext):
+    """card_price() of the selected rarity, collecting its missing or expired card numbers from the shop first.
+
+    Collection runs only when the stored result is not_observed or expired, one card number at a time through
+    collect (default price_collector.collect_card_number); a stored page is read back with observe_card_numbers (which
+    updates observations in place) and mapped by card_price again. Database, cache, data, config and official
+    errors and every other status never contact the shop. A gate wait or failed attempt is the result. The detail
+    depends only on stored data and attempts, never on whether this run collected, so a rerun right after a
+    collection keeps the same exported values (and the user's confirmation).
+    """
+    collect = collect or price_collector.collect_card_number  # looked up per call so it can be replaced in tests
+    redact_urls = (database_url, redis_url)
+    result = card_price(rarity, locale, official_prints, observations, redact_urls)
+    collected = []
+    while result["status"] in COLLECTABLE_STATUSES:
+        pending = [number for number in numbers_to_collect(rarity, locale, official_prints, observations)
+                   if number not in collected]
+        if not pending:
+            break
+        number = pending[0]
+        reason = missing_reason(observations[number], datetime.now(timezone.utc))
+        try:
+            outcome = collect(number, locale, database_url, fetching)
+        except price_store.PriceError as error:
+            message = price_store.redact(str(error), *redact_urls)
+            return price_result(failure_status(error), locale,
+                                f"{number} 가격 수집 중 오류: {type(error).__name__}: {message}")
+        if outcome["state"] == "wait":
+            return waiting_result(number, reason, locale, outcome)
+        if outcome["state"] == "failed":
+            return price_result("collection_failed", locale,
+                                f"{number}: {reason}. {kst_text(outcome['attempted_at'])} 상점 수집 실패 — "
+                                f"{outcome['error']}. 다음 시도는 {kst_text(outcome['next_allowed_at'])} 이후입니다")
+        if outcome["state"] != "stored":
+            raise ValueError(f"{number}: unknown collection outcome state {outcome['state']!r}")
+        collected.append(number)
+        observations.update(observe_card_numbers([number], locale, database_url, redis_url))
+        result = card_price(rarity, locale, official_prints, observations, redact_urls)
+    return result

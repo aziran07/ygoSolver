@@ -4,8 +4,16 @@ PostgreSQL keeps every imported TCGSHOP listing snapshot and its per-product
 observations. Redis only caches the answer to "current observed prices for one
 exact card number + locale"; it never holds data that PostgreSQL does not.
 
-This module never contacts the shop. Snapshots are captured elsewhere and
-validated by `prices.load_snapshot` / `prices.parse_tcgshop_list`.
+This module never contacts the shop. Snapshots are captured elsewhere (a file
+capture, or price_collector.py) and validated by `prices.parse_tcgshop_list`.
+
+Shop request gate: TCGSHOP robots.txt declares a global `Crawl-delay: 43200`.
+price_collection_gate holds the one global time the next shop request is
+allowed, shared by every app session and process. A request is reserved
+(gate advanced by 12 hours, attempt row inserted) in one transaction before
+any HTTP is sent, so a failed or interrupted request also uses the interval.
+`init` seeds the gate from the newest stored snapshot's observed_at, and a
+reservation also waits for 12 hours after any snapshot imported later.
 
 Cache consistency:
 - Every cache key carries a group revision: the highest committed snapshot id
@@ -41,6 +49,8 @@ import redis
 from prices import CATEGORY_LOCALES, REGION_LOCALES, SCOPE, PriceError, load_snapshot, parse_tcgshop_list
 
 PRICE_LIFETIME = timedelta(hours=12)
+CRAWL_DELAY = timedelta(seconds=43200)  # TCGSHOP robots.txt, global for the whole site
+GATE_NAME = "tcgshop"
 RESULT_SCOPE = "observed_products"
 CACHE_KEY_PREFIX = "ygosolver:prices:v1"
 CACHE_FORMAT = 1
@@ -83,7 +93,42 @@ CREATE TABLE IF NOT EXISTS price_observations (
 );
 CREATE INDEX IF NOT EXISTS price_observations_group
     ON price_observations (card_number, locale, snapshot_id);
+CREATE TABLE IF NOT EXISTS price_collection_gate (
+    name TEXT PRIMARY KEY CHECK (name = 'tcgshop'),
+    last_request_at TIMESTAMPTZ,
+    next_allowed_at TIMESTAMPTZ NOT NULL,
+    seeded_from TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS price_collection_attempts (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    card_number TEXT NOT NULL,
+    locale TEXT NOT NULL CHECK (locale IN ('ja', 'ko')),
+    request_url TEXT NOT NULL,
+    reserved_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ,
+    outcome TEXT NOT NULL CHECK (outcome IN ('pending', 'stored', 'failed')),
+    snapshot_id BIGINT REFERENCES price_snapshots(id),
+    product_count INTEGER,
+    error TEXT,
+    CHECK ((outcome = 'pending') = (finished_at IS NULL)),
+    CHECK ((outcome = 'stored') = (snapshot_id IS NOT NULL AND product_count > 0)),
+    CHECK ((outcome = 'failed') = (error IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS price_collection_attempts_number
+    ON price_collection_attempts (card_number, locale, id);
 """
+
+# The last shop request known before the gate existed is the newest stored snapshot; without any, the first request
+# is allowed now. Existing gate rows are never changed.
+SEED_GATE = """
+INSERT INTO price_collection_gate (name, last_request_at, next_allowed_at, seeded_from)
+SELECT %(name)s, max(observed_at), coalesce(max(observed_at) + %(delay)s, now()),
+       CASE WHEN max(observed_at) IS NULL THEN 'no stored snapshot' ELSE 'max(price_snapshots.observed_at)' END
+FROM price_snapshots
+ON CONFLICT (name) DO NOTHING
+"""
+ATTEMPT_FIELDS = ("id", "card_number", "locale", "request_url", "reserved_at", "finished_at", "outcome",
+                  "snapshot_id", "product_count", "error")
 
 
 class PriceNotFound(PriceError):
@@ -121,10 +166,12 @@ def connect_postgres(database_url):
 
 
 def init_db(database_url):
+    """Create the tables and seed the shop request gate in one transaction (safe to repeat)."""
     connection = connect_postgres(database_url)
     try:
         with connection:
             connection.execute(SCHEMA)
+            connection.execute(SEED_GATE, {"name": GATE_NAME, "delay": CRAWL_DELAY})
     except psycopg.Error as error:
         raise PriceError(f"PostgreSQL schema creation failed: {redact(str(error), database_url)}") from error
     finally:
@@ -132,17 +179,24 @@ def init_db(database_url):
 
 
 def import_snapshot(html_path, metadata_path, database_url, redis_url):
-    """Store one captured listing snapshot atomically; re-importing it is a no-op.
-
-    Redis is not touched: cache keys are versioned by snapshot id, so a new
-    import makes new keys instead of invalidating old ones.
-    """
+    """Store one captured listing snapshot file atomically; re-importing it is a no-op."""
     try:
         metadata, html = load_snapshot(html_path, metadata_path)
     except (OSError, ValueError) as error:
         raise PriceError(f"cannot read snapshot files: {error}") from error
+    return store_listing(metadata, parse_tcgshop_list(html, metadata["url"]), database_url)
+
+
+def store_listing(metadata, products, database_url, attempt_id=None, scope=SCOPE):
+    """Store one validated listing response (metadata + parsed products) atomically.
+
+    With attempt_id, the pending collection attempt is marked stored in the same transaction. Redis is not
+    touched: cache keys are versioned by snapshot id, so a new snapshot makes new keys instead of invalidating
+    old ones.
+    """
+    if not products:
+        raise PriceError("a snapshot must contain at least one product")
     source_url = metadata["url"]
-    products = parse_tcgshop_list(html, source_url)
     observed_at = datetime.fromisoformat(metadata["observed_at"])
     summary = {
         "source_url": source_url,
@@ -164,6 +218,8 @@ def import_snapshot(html_path, metadata_path, database_url, redis_url):
                 (source_url, observed_at),
             ).fetchone()
             if existing:
+                if attempt_id is not None:
+                    raise PriceError(f"collected snapshot {source_url} at {summary['observed_at']} already exists")
                 if existing[1] != metadata["sha256"]:
                     raise PriceError(
                         f"snapshot {source_url} at {summary['observed_at']} already stored with another sha256"
@@ -172,7 +228,7 @@ def import_snapshot(html_path, metadata_path, database_url, redis_url):
             snapshot_id = connection.execute(
                 "INSERT INTO price_snapshots (source_url, locale, scope, observed_at, status_code, sha256, bytes,"
                 " content_type, imported_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now()) RETURNING id",
-                (source_url, summary["locale"], SCOPE, observed_at, metadata["status_code"],
+                (source_url, summary["locale"], scope, observed_at, metadata["status_code"],
                  metadata["sha256"], metadata["bytes"], metadata.get("content_type")),
             ).fetchone()[0]
             with connection.cursor() as cursor:
@@ -183,11 +239,94 @@ def import_snapshot(html_path, metadata_path, database_url, redis_url):
                     " %(price_krw)s, %(stock_status)s, %(stock_evidence)s, %(product_url)s)",
                     [{**product, "snapshot_id": snapshot_id} for product in products],
                 )
+            if attempt_id is not None:
+                updated = connection.execute(
+                    "UPDATE price_collection_attempts SET outcome = 'stored', finished_at = clock_timestamp(),"
+                    " snapshot_id = %s, product_count = %s WHERE id = %s AND outcome = 'pending'",
+                    (snapshot_id, len(products), attempt_id),
+                ).rowcount
+                if updated != 1:
+                    raise PriceError(f"collection attempt {attempt_id} is not pending")
     except psycopg.Error as error:
-        raise PriceError(f"PostgreSQL import failed: {redact(str(error), database_url)}") from error
+        raise PriceDatabaseError(f"PostgreSQL import failed: {redact(str(error), database_url)}") from error
     finally:
         connection.close()
     return {**summary, "snapshot_id": snapshot_id, "inserted": len(products), "already_imported": False}
+
+
+def reserve_collection(card_number, locale, request_url, database_url):
+    """Reserve the one global shop request if the gate allows it now (PostgreSQL clock).
+
+    Returns {"allowed": True, "attempt_id", "reserved_at", "next_allowed_at"} after advancing the gate by
+    CRAWL_DELAY and inserting a pending attempt, or {"allowed": False, "next_allowed_at"}. The row lock makes
+    concurrent sessions and processes take turns, so at most one of them is allowed per interval.
+    """
+    connection = connect_postgres(database_url)
+    try:
+        with connection:
+            gate = connection.execute(
+                "SELECT next_allowed_at FROM price_collection_gate WHERE name = %s FOR UPDATE", (GATE_NAME,),
+            ).fetchone()
+            if gate is None:
+                raise PriceError("shop request gate is not initialized; run `price_store.py init`")
+            next_allowed_at = gate[0]
+            # Read after the row lock is held, so time spent waiting for another session counts and the
+            # interval starts at the actual reservation.
+            now = connection.execute("SELECT clock_timestamp()").fetchone()[0]
+            # A capture imported from a file after the gate was seeded is also a shop request.
+            newest_snapshot = connection.execute("SELECT max(observed_at) FROM price_snapshots").fetchone()[0]
+            if newest_snapshot is not None:
+                next_allowed_at = max(next_allowed_at, newest_snapshot + CRAWL_DELAY)
+            if now < next_allowed_at:
+                return {"allowed": False, "next_allowed_at": next_allowed_at}
+            connection.execute(
+                "UPDATE price_collection_gate SET last_request_at = %s, next_allowed_at = %s WHERE name = %s",
+                (now, now + CRAWL_DELAY, GATE_NAME),
+            )
+            attempt_id = connection.execute(
+                "INSERT INTO price_collection_attempts (card_number, locale, request_url, reserved_at, outcome)"
+                " VALUES (%s, %s, %s, %s, 'pending') RETURNING id",
+                (card_number, locale, request_url, now),
+            ).fetchone()[0]
+    except psycopg.Error as error:
+        raise PriceDatabaseError(f"PostgreSQL request gate failed: {redact(str(error), database_url)}") from error
+    finally:
+        connection.close()
+    return {"allowed": True, "attempt_id": attempt_id, "reserved_at": now, "next_allowed_at": now + CRAWL_DELAY}
+
+
+def finish_attempt(attempt_id, error, database_url):
+    """Record a pending collection attempt as failed with its error text."""
+    connection = connect_postgres(database_url)
+    try:
+        with connection:
+            updated = connection.execute(
+                "UPDATE price_collection_attempts SET outcome = 'failed', finished_at = clock_timestamp(), error = %s"
+                " WHERE id = %s AND outcome = 'pending'",
+                (error, attempt_id),
+            ).rowcount
+            if updated != 1:
+                raise PriceError(f"collection attempt {attempt_id} is not pending")
+    except psycopg.Error as error_:
+        raise PriceDatabaseError(f"PostgreSQL attempt update failed: {redact(str(error_), database_url)}") from error_
+    finally:
+        connection.close()
+
+
+def latest_attempt(card_number, locale, database_url):
+    """The newest collection attempt for an exact card number + locale as a dict, or None."""
+    connection = connect_postgres(database_url)
+    try:
+        row = connection.execute(
+            f"SELECT {', '.join(ATTEMPT_FIELDS)} FROM price_collection_attempts"
+            " WHERE card_number = %s AND locale = %s ORDER BY id DESC LIMIT 1",
+            (card_number, locale),
+        ).fetchone()
+    except psycopg.Error as error:
+        raise PriceDatabaseError(f"PostgreSQL attempt query failed: {redact(str(error), database_url)}") from error
+    finally:
+        connection.close()
+    return dict(zip(ATTEMPT_FIELDS, row)) if row else None
 
 
 def cache_key(card_number, locale, revision):

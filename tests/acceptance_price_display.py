@@ -28,7 +28,8 @@ app = AppTest.from_file(str(Path("app.py").resolve()), default_timeout=90)
 app.session_state["rows"] = [row]
 app.run()
 assert not app.exception, app.exception
-assert any("240" in label for label in app.selectbox(key="rarity_live_price").options)
+assert all("240" not in label for label in app.selectbox(key="rarity_live_price").options)
+assert app.metric[0].label == "단가 (일본판)" and app.metric[0].value == "240원"
 table = app.dataframe[0].value
 assert list(table["단가(원)"]) == [240]
 assert list(table["합계(원)"]) == [720]
