@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+# Downloaded DRAW2 models (~427MB) and official-DB lookup cache
+data/models/
+data/catalog/
+# Generated experiment outputs and the local official-reference image library
+data/experiments/
+data/references/
+# Official card inventory (inventory.py) and its DRAW2-missing artwork export
+data/official_cards/
+data/references_missing/
+# Official artworks of low-confidence model candidates (references.CandidateReviewer)
+data/candidate_references/
+# Local evaluation photos and generated reports
+userDataset/
+outputs/
+# Local agent instructions and session handoff records
+AGENTS.md
+HANDOFF.md
+# Secrets (keep the example template and Streamlit config.toml tracked)
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+# Logs
+*.log

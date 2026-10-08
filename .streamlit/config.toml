@@ -1,0 +1,8 @@
+[server]
+# Enforced by the Streamlit server for every upload (file uploader and camera); matches MAX_UPLOAD_BYTES in app.py.
+maxUploadSize = 20
+# Serve only this PC, not the local network.
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
