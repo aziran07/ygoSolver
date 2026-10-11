@@ -21,7 +21,7 @@ class RarityAppTest(unittest.TestCase):
         self.addCleanup(sort_patch.stop)
         st.cache_resource.clear()
         st.cache_data.clear()
-        self.options = mock.Mock(side_effect=lambda cid: {12950: ["N", "SR", "UR"], 5050: ["SR", "UR"]}[cid])
+        self.options = mock.Mock(side_effect=lambda cid, **kwargs: {12950: ["N", "SR", "UR"], 5050: ["SR", "UR"]}[cid])
         for patch in (mock.patch.object(recognition, "models_ready", return_value=True),
                       mock.patch.object(references, "library_info", return_value=None),
                       mock.patch.object(rarities, "get_rarities", self.options)):
@@ -111,7 +111,7 @@ class RarityAppTest(unittest.TestCase):
         app = start_app([row("a", card=ASH)]).run()
         self.assertFalse(app.exception)
         self.assertEqual(download_buttons_disabled(app), [True, True])
-        self.assertTrue(any("한국어" in item.value and "일본어" in item.value for item in app.warning))
+        self.assertTrue(any("판본" in item.value and "없" in item.value for item in app.warning))
         self.assertFalse([button for button in app.button if button.key == "retry_rarity_a"])
 
     def test_catalog_retry_for_another_candidate_preserves_same_cid_rarity(self):
@@ -138,11 +138,14 @@ class RarityAppTest(unittest.TestCase):
             next(button for button in app.button if button.label == "추가").click().run()
         self.assertFalse(app.exception)
         added = app.session_state["rows"][0]
+        self.assertIsNone(added["locale"])
+        self.assertEqual(download_buttons_disabled(app), [True, True])
+        app.selectbox(key=f"locale_{added['key']}").set_value("ja").run()
         self.assertEqual(app.selectbox(key=f"rarity_{added['key']}").value, "N")
 
     def test_invalid_saved_rarity_stays_unresolved_until_user_selects_valid_option(self):
         first = row("a", card=ASH)
-        first.update(rarity_cid=12950, rarity="SE")
+        first.update(rarity_cid=12950, rarity_locale="ja", rarity="SE")
         app = start_app([first]).run()
         self.assertFalse(app.exception)
         self.assertIsNone(app.selectbox(key="rarity_a").value)

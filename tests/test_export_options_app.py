@@ -50,8 +50,8 @@ class ExportOptionsAppTest(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def assert_file_contents(self, app, indices):
-        headers = ["카드명", "레어도", "수량", *[self.headers[i] for i in indices], *PRICE_HEADERS]
-        values = ["내 우라라", "슈퍼 레어", 3, *[self.values[i] for i in indices], *PRICE_VALUES]
+        headers = ["카드명", "레어도", "판본", "수량", *[self.headers[i] for i in indices], *PRICE_HEADERS]
+        values = ["내 우라라", "슈퍼 레어", "일본판", 3, *[self.values[i] for i in indices], *PRICE_VALUES]
         self.assertFalse(app.exception)
         self.assertEqual(list(app.dataframe[0].value.columns), headers)
         self.assertEqual(app.dataframe[0].value.values.tolist(), [values])

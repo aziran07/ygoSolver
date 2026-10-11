@@ -141,6 +141,19 @@ class RarityReadTest(unittest.TestCase):
         self.assertEqual(rarities.get_rarities(16537, self.path), ["N", "SR"])
         self.assertEqual(rarities.get_rarities(15627, self.path), ["SR", "UR"])
 
+    def test_selected_physical_edition_only_exposes_its_own_printings(self):
+        self.assertEqual(rarities.get_rarities(16537, self.path, locale="ko"), ["SR"])
+        self.assertEqual(rarities.get_rarities(16537, self.path, locale="ja"), ["N", "SR"])
+        with self.assertRaises(rarities.RarityUnavailable):
+            rarities.get_rarities(15627, self.path, locale="ko")
+        with self.assertRaises(ValueError):
+            rarities.get_rarities(16537, self.path, locale="en")
+
+    def test_selecting_one_edition_does_not_hide_corruption_in_other_edition(self):
+        self.mutate("DELETE FROM rarity_prints WHERE locale='ja' AND cid=16537")
+        with self.assertRaises(rarities.RarityError):
+            rarities.get_rarities(16537, self.path, locale="ko")
+
     def test_distinct_finishes_with_same_printed_code_remain_separate(self):
         self.mutate("INSERT INTO rarity_codes VALUES ('SE',5,'{\"ko\":\"SE\",\"ja\":\"SE\"}','시크릿 레어',20)")
         self.mutate("INSERT INTO rarity_codes VALUES ('SE@43',43,'{\"ko\":\"SE\",\"ja\":\"SE\"}','시크릿 레어（SPECIAL BLUE Ver.）',21)")

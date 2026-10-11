@@ -11,14 +11,17 @@ import card_prices
 import deck_order
 import rarities
 
-# Columns the user can add to the export, in their fixed output order after 카드명, 레어도, 수량.
+# Physical edition of each card (its printed language), exported as the 판본 column between 레어도 and 수량.
+LOCALE_LABELS = {"ko": "한국판", "ja": "일본판"}
+
+# Columns the user can add to the export, in their fixed output order after 카드명, 레어도, 판본, 수량.
 OPTIONAL_COLUMNS = {"name_ko": "한국어 이름", "name_ja": "일본어 이름", "name_en": "영어 이름", "cid": "공식 CID"}
 
 # Price columns appended after the optional columns when include_price is set. Each card then carries "price",
 # the card_prices.get_card_price result; amounts and observed time are filled for card_prices.PRICED_STATUSES ("ok" in
 # stock, "out_of_stock" sold out, "stock_unknown" stock not verifiable), every other status leaves them blank.
 # 단가 and 합계 are always included; the price metadata columns the user can add follow them in this fixed order.
-# The price detail and the price edition are never exported.
+# The price detail and the price record's edition are never exported; the price edition must equal the card's 판본.
 PRICE_HEADERS = ["단가(원)", "합계(원)"]
 OPTIONAL_PRICE_COLUMNS = {"status": "가격 상태", "product_url": "가격 상품 URL", "observed_at": "가격 관찰 시각(KST)",
                           "card_number": "가격 수록 번호"}
@@ -38,12 +41,20 @@ def validate_quantity(value):
     return value
 
 
-def aggregate(entries):
-    """Sum quantities of entries sharing the same official CID and rarity.
+def locale_label(card):
+    """판본 label of a card's physical edition; anything but a supported edition raises ValueError."""
+    locale = card.get("locale")
+    if locale not in LOCALE_LABELS:
+        raise ValueError(f"CID {card['cid']} 항목의 실물 판본이 확인되지 않았습니다: {locale!r}. 한국판/일본판을 선택하세요.")
+    return LOCALE_LABELS[locale]
 
-    Each entry: {'cid': int, 'rarity': rarity code, 'name': str, 'name_ko', 'name_ja', 'name_en', 'quantity': int}.
-    The same CID with different rarities stays on separate lines, but every line of one CID must
-    carry the same card name. Returns one dict per (CID, rarity) in first-seen order.
+
+def aggregate(entries):
+    """Sum quantities of entries sharing the same official CID, rarity and physical edition.
+
+    Each entry: {'cid': int, 'rarity': rarity code, 'locale': 'ko' | 'ja', 'name': str, 'name_ko', 'name_ja',
+    'name_en', 'quantity': int}. The same CID with a different rarity or edition stays on separate lines, but every
+    line of one CID must carry the same card name. Returns one dict per (CID, rarity, locale) in first-seen order.
     """
     by_cid_rarity = {}
     name_by_cid = {}
@@ -58,15 +69,16 @@ def aggregate(entries):
         rarity = entry.get("rarity")
         if rarity not in rarities.RARITY_LABELS:
             raise ValueError(f"CID {cid} 항목의 레어도가 올바르지 않습니다: {rarity!r}. 레어도를 선택하세요.")
-        if key_price_conflicts(by_cid_rarity.get((cid, rarity)), entry):
-            raise ValueError(f"같은 카드·레어도(CID {cid}, {rarity})에 서로 다른 가격 정보가 들어왔습니다. "
-                             "가격 판본과 가격을 다시 확인하세요.")
+        locale_label(entry)
+        key = (cid, rarity, entry["locale"])
+        if key_price_conflicts(by_cid_rarity.get(key), entry):
+            raise ValueError(f"같은 카드·레어도·판본(CID {cid}, {rarity}, {entry['locale']})에 서로 다른 가격 정보가 "
+                             "들어왔습니다. 판본과 가격을 다시 확인하세요.")
         if name_by_cid.setdefault(cid, name) != name:
             raise ValueError(
                 f"같은 카드(CID {cid})에 서로 다른 카드명이 입력되었습니다: "
                 f"{name_by_cid[cid]!r} / {name!r}. 하나로 맞춰 주세요."
             )
-        key = (cid, rarity)
         if key not in by_cid_rarity:
             by_cid_rarity[key] = {**entry, "name": name, "quantity": 0}
         by_cid_rarity[key]["quantity"] += quantity
@@ -74,18 +86,20 @@ def aggregate(entries):
 
 
 def key_price_conflicts(existing, entry):
-    """True when an already aggregated line of the same CID and rarity carries other price data than entry
+    """True when an already aggregated line of the same CID, rarity and edition carries other price data than entry
     (including one with a price and one without)."""
     return existing is not None and existing.get("price") != entry.get("price")
 
 
 def sort_cards(cards, database_path=deck_order.DATABASE_PATH):
-    """Return a new list of the aggregated cards in deck order (see deck_order), the same CID's rarities lowest first.
+    """Return a new list of the aggregated cards in deck order (see deck_order), the same CID's rarities lowest first
+    and, within one rarity, 한국판 before 일본판.
 
     Raises deck_order.DeckOrderError (a ValueError) when any card's official order data is missing or invalid.
     """
     keys = deck_order.get_sort_keys([card["cid"] for card in cards], database_path=database_path)
-    return sorted(cards, key=lambda card: (keys[card["cid"]], rarities.RARITY_ORDER.index(card["rarity"])))
+    return sorted(cards, key=lambda card: (keys[card["cid"]], rarities.RARITY_ORDER.index(card["rarity"]),
+                                           list(LOCALE_LABELS).index(card["locale"])))
 
 
 def selected_fields(optional_fields):
@@ -111,7 +125,7 @@ def selected_price_fields(optional_price_fields, include_price):
 
 def headers(optional_fields=(), include_price=False, optional_price_fields=()):
     price_fields = selected_price_fields(optional_price_fields, include_price)
-    return ["카드명", "레어도", "수량", *(OPTIONAL_COLUMNS[field] for field in selected_fields(optional_fields)),
+    return ["카드명", "레어도", "판본", "수량", *(OPTIONAL_COLUMNS[field] for field in selected_fields(optional_fields)),
             *(PRICE_HEADERS if include_price else []), *(OPTIONAL_PRICE_COLUMNS[field] for field in price_fields)]
 
 
@@ -122,6 +136,9 @@ def price_values(card):
     price = card.get("price")
     if not isinstance(price, dict) or not PRICE_FIELDS <= set(price):
         raise ValueError(f"CID {card['cid']} 줄에 가격 정보가 없거나 올바르지 않습니다: {price!r}")
+    locale_label(card)
+    if price["locale"] != card["locale"]:
+        raise ValueError(f"CID {card['cid']} 줄의 가격 판본 {price['locale']!r}이 카드 판본 {card['locale']!r}과 다릅니다.")
     unit = price["unit_price_krw"]
     if price["status"] in card_prices.PRICED_STATUSES:
         if isinstance(unit, bool) or not isinstance(unit, int) or unit <= 0:
@@ -148,7 +165,7 @@ def exported_price_values(card, price_fields):
 
 def row_values(card, optional_fields=(), include_price=False, optional_price_fields=()):
     price_fields = selected_price_fields(optional_price_fields, include_price)
-    return [card["name"], rarities.RARITY_LABELS[card["rarity"]], card["quantity"],
+    return [card["name"], rarities.RARITY_LABELS[card["rarity"]], locale_label(card), card["quantity"],
             *(card[field] for field in selected_fields(optional_fields)),
             *(exported_price_values(card, price_fields) if include_price else [])]
 

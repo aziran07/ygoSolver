@@ -10,6 +10,7 @@ from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 import catalog
+import card_language
 import recognition
 import references
 import rarities
@@ -31,7 +32,7 @@ LOCALIZED_CANDIDATES = CANDIDATES + [
 
 
 def row(key, card=None, candidates=(), status="recognized", quantity=1):
-    return {"key": key, "source": "manual", "image_name": None, "index": None, "crop": None,
+    return {"key": key, "source": "manual", "image_name": None, "index": None, "crop": None, "locale": "ja",
             "candidates": list(candidates), "status": status, "choice": None, "card": card, "error": None,
             "quantity": quantity, "name_override": ""}
 
@@ -358,6 +359,11 @@ def reference_match(card, inliers=24):
 
 class UploadTest(unittest.TestCase):
     def setUp(self):
+        edition = mock.patch.object(card_language, "detect_language", return_value={
+            "locale": "ja", "status": "classified", "reason": "일본어 문자 근거", "evidence": {},
+            "elapsed_seconds": 0.01})
+        edition.start()
+        self.addCleanup(edition.stop)
         sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
         sort_patch.start()
         self.addCleanup(sort_patch.stop)
@@ -521,6 +527,11 @@ class UploadTest(unittest.TestCase):
 
 class ReferenceModeTest(unittest.TestCase):
     def setUp(self):
+        edition = mock.patch.object(card_language, "detect_language", return_value={
+            "locale": "ja", "status": "classified", "reason": "일본어 문자 근거", "evidence": {},
+            "elapsed_seconds": 0.01})
+        edition.start()
+        self.addCleanup(edition.stop)
         sort_patch = mock.patch.object(deck_order, "get_sort_keys", side_effect=app_sort_keys)
         sort_patch.start()
         self.addCleanup(sort_patch.stop)

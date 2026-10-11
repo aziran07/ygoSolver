@@ -29,7 +29,7 @@ def quote(status="ok"):
 
 
 def entry(quantity=1, price=None):
-    return {"cid": 5631, "name": "확산하는 파동", "rarity": "N", "quantity": quantity,
+    return {"cid": 5631, "name": "확산하는 파동", "rarity": "N", "quantity": quantity, "locale": "ja",
             "name_ko": "확산하는 파동", "name_ja": "拡散する波動", "name_en": "Diffusion Wave-Motion",
             "price": quote() if price is None else price}
 
@@ -38,13 +38,13 @@ class PriceExportTest(unittest.TestCase):
     def test_default_price_columns_are_only_numeric_unit_and_total_in_both_formats(self):
         cards = exports.aggregate([entry(2), entry(3)])
         rows = list(csv.reader(io.StringIO(exports.to_csv_bytes(cards, include_price=True).decode("utf-8-sig"))))
-        self.assertEqual(rows[0], ["카드명", "레어도", "수량", *PRICE_HEADERS])
-        self.assertEqual(rows[1], ["확산하는 파동", "노멀", "5", "240", "1200"])
+        self.assertEqual(rows[0], ["카드명", "레어도", "판본", "수량", *PRICE_HEADERS])
+        self.assertEqual(rows[1], ["확산하는 파동", "노멀", "일본판", "5", "240", "1200"])
         sheet = load_workbook(io.BytesIO(exports.to_xlsx_bytes(cards, include_price=True))).active
-        self.assertEqual(sheet["D2"].value, 240)
-        self.assertEqual(sheet["E2"].value, 1200)
-        self.assertEqual(sheet["D2"].data_type, "n")
-        self.assertEqual(sheet.max_column, 5)
+        self.assertEqual(sheet["E2"].value, 240)
+        self.assertEqual(sheet["F2"].value, 1200)
+        self.assertEqual(sheet["E2"].data_type, "n")
+        self.assertEqual(sheet.max_column, 6)
 
     def test_all_price_option_subsets_and_name_options_have_exact_contents(self):
         cards = exports.aggregate([entry(2), entry(3)])
@@ -52,9 +52,9 @@ class PriceExportTest(unittest.TestCase):
             indices = [i for i in range(4) if mask & (1 << i)]
             # Reverse inputs to prove canonical output order rather than caller order.
             selected = tuple(PRICE_OPTIONS[i] for i in reversed(indices))
-            expected_headers = ["카드명", "레어도", "수량", "공식 CID", *PRICE_HEADERS,
+            expected_headers = ["카드명", "레어도", "판본", "수량", "공식 CID", *PRICE_HEADERS,
                                 *[OPTION_HEADERS[i] for i in indices]]
-            expected = ["확산하는 파동", "노멀", 5, 5631, 240, 1200,
+            expected = ["확산하는 파동", "노멀", "일본판", 5, 5631, 240, 1200,
                         *[OPTION_VALUES[i] for i in indices]]
             with self.subTest(mask=mask):
                 args = {"optional_fields": ("cid",), "include_price": True, "optional_price_fields": selected}
@@ -71,13 +71,13 @@ class PriceExportTest(unittest.TestCase):
                 cards = [entry(price=q)]
                 args = {"include_price": True, "optional_price_fields": PRICE_OPTIONS}
                 rows = list(csv.reader(io.StringIO(exports.to_csv_bytes(cards, **args).decode("utf-8-sig"))))
-                self.assertEqual(rows[1][3:], ["", "", status, "", "", ""])
+                self.assertEqual(rows[1][4:], ["", "", status, "", "", ""])
                 self.assertNotIn("가격 상세", rows[0])
                 self.assertNotIn("가격 판본", rows[0])
                 sheet = load_workbook(io.BytesIO(exports.to_xlsx_bytes(cards, **args))).active
-                self.assertIsNone(sheet["D2"].value)
                 self.assertIsNone(sheet["E2"].value)
-                self.assertEqual(sheet["F2"].value, status)
+                self.assertIsNone(sheet["F2"].value)
+                self.assertEqual(sheet["G2"].value, status)
 
     def test_optional_text_remains_formula_safe(self):
         cards = [entry(price={**quote(), "product_url": "=DANGEROUS()", "card_number": "+CMD"})]
@@ -85,7 +85,7 @@ class PriceExportTest(unittest.TestCase):
         rows = list(csv.reader(io.StringIO(exports.to_csv_bytes(cards, **args).decode("utf-8-sig"))))
         self.assertEqual(rows[1][-2:], ["'=DANGEROUS()", "'+CMD"])
         sheet = load_workbook(io.BytesIO(exports.to_xlsx_bytes(cards, **args))).active
-        self.assertEqual([(sheet[cell].value, sheet[cell].data_type) for cell in ("F2", "G2")],
+        self.assertEqual([(sheet[cell].value, sheet[cell].data_type) for cell in ("G2", "H2")],
                          [("=DANGEROUS()", "s"), ("+CMD", "s")])
 
     def test_unknown_or_removed_price_options_are_rejected(self):
@@ -106,8 +106,8 @@ class PriceExportTest(unittest.TestCase):
             self.assertEqual(rows[0]['가격 수록 번호'], '15AY-JPB22')
             self.assertTrue(rows[0]['가격 관찰 시각(KST)'])
             sheet = load_workbook(io.BytesIO(exports.to_xlsx_bytes(cards, **args))).active
-            self.assertEqual((sheet['D2'].value, sheet['E2'].value, sheet['F2'].value), (240, 1200, status))
-            self.assertEqual(sheet['D2'].data_type, 'n')
+            self.assertEqual((sheet['E2'].value, sheet['F2'].value, sheet['G2'].value), (240, 1200, status))
+            self.assertEqual(sheet['E2'].data_type, 'n')
 
     def test_unavailable_stock_prices_still_require_valid_money_and_observation(self):
         for status in ('out_of_stock', 'stock_unknown'):

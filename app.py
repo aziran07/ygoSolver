@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import streamlit as st
 from PIL import Image, ImageDraw, ImageOps
 
+import card_language
 import card_prices
 import catalog
 import exports
@@ -20,7 +21,9 @@ import references
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 40_000_000
 LANGUAGES = {"한국어": "name_ko", "일본어": "name_ja", "영어": "name_en"}
-PRICE_LOCALES = {"일본판": "ja", "한국판": "ko"}
+# Physical edition choices of a row; None means the edition is not confirmed yet and blocks price and export.
+LOCALE_CHOICES = [None, "ko", "ja"]
+LOCALE_CHOICE_LABELS = {None: "확인 필요", **exports.LOCALE_LABELS}
 # Price database settings come from the environment (compose.yaml); missing values show as a price status.
 DATABASE_URL = os.environ.get("DATABASE_URL")
 REDIS_URL = os.environ.get("REDIS_URL")
@@ -33,10 +36,18 @@ state.setdefault("recognition_error", None)
 state.setdefault("overlays", [])
 state.setdefault("export_fingerprint", None)
 state.setdefault("card_lookups", {})  # normalized English name -> {"card": ...} or {"error": ...}
-state.setdefault("rarity_lookups", {})  # official CID -> {"rarities": [...]} or {"error": ...}
+state.setdefault("rarity_lookups", {})  # (official CID, locale) -> {"rarities": [...]} or {"error": ...}
 state.setdefault("official_prints", {})  # (official CID, locale) -> {"prints": [...]} or {"error": ...}
 state.setdefault("collection_failures", {})  # (card number, locale) -> failed price_collector outcome
 state.setdefault("price_retries", set())  # (official CID, rarity, locale) to collect again on this run
+for session_row in state.rows:
+    # Rows from before edition detection have no evidence: their edition must be selected explicitly.
+    session_row.setdefault("locale", None)
+    session_row.setdefault("language_detection", None)
+    session_row.setdefault("language_error", None)
+    # A changed edition selector applies from the start of this run, so prices are observed for the new edition.
+    if f"locale_{session_row['key']}" in state:
+        session_row["locale"] = state[f"locale_{session_row['key']}"]
 
 
 @st.cache_resource(show_spinner=False)
@@ -71,21 +82,23 @@ def lookup(name_en):
     return state.card_lookups[key]
 
 
-def rarity_lookup(cid):
-    """Official rarity codes (lowest first) for a CID as {"rarities": [...]} or {"error": ...}.
+def rarity_lookup(cid, locale):
+    """Official rarity codes (lowest first) of a CID's printings in one physical edition as {"rarities": [...]} or
+    {"error": ...}.
 
-    A confirmed absence of any Korean/Japanese printing is {"rarities": [], "absent": reason}: an expected
+    A confirmed absence of any printing in that edition is {"rarities": [], "absent": reason}: an expected
     state, not a failure, so it offers no retry. Cached for the session like card lookups; failures are
     retried only by the explicit retry button.
     """
-    if cid not in state.rarity_lookups:
+    key = (cid, locale)
+    if key not in state.rarity_lookups:
         try:
-            state.rarity_lookups[cid] = {"rarities": list(rarities.get_rarities(cid))}
+            state.rarity_lookups[key] = {"rarities": list(rarities.get_rarities(cid, locale=locale))}
         except rarities.RarityUnavailable as absence:
-            state.rarity_lookups[cid] = {"rarities": [], "absent": str(absence)}
+            state.rarity_lookups[key] = {"rarities": [], "absent": str(absence)}
         except Exception as error:  # shown on the row; export stays blocked
-            state.rarity_lookups[cid] = {"error": f"레어도 조회 실패 (CID {cid}): {type(error).__name__}: {error}"}
-    return state.rarity_lookups[cid]
+            state.rarity_lookups[key] = {"error": f"레어도 조회 실패 (CID {cid}, {locale}): {type(error).__name__}: {error}"}
+    return state.rarity_lookups[key]
 
 
 def official_prints_lookup(cid, locale):
@@ -104,31 +117,30 @@ def official_prints_lookup(cid, locale):
     return state.official_prints[key]
 
 
-def price_of(cid, rarity):
-    """card_prices result for a card's rarity in the chosen edition, computed once per script run.
+def price_of(cid, rarity, locale):
+    """card_prices result for a card's rarity in its physical edition (locale), computed once per script run.
 
     Prices are never kept across reruns, so every rerun reflects the price store's current state and expiry. A
     missing or expired price is collected from the shop now. A failed collection is requested again only after the
     card's "가격 수집 다시 시도" button; a verified empty search is reused for 12 hours and then searched again
     automatically, or earlier with that button.
     """
-    key = (cid, rarity)
+    key = (cid, rarity, locale)
     if key not in price_results:
         if not (DATABASE_URL and REDIS_URL):
             # Without a price store there is nothing to match, so the official print list is not fetched either.
             price_results[key] = card_prices.price_result(
-                "config_error", price_locale, "DATABASE_URL 또는 REDIS_URL 환경 변수가 설정되지 않았습니다.")
+                "config_error", locale, "DATABASE_URL 또는 REDIS_URL 환경 변수가 설정되지 않았습니다.")
             return price_results[key]
-        prints = official_prints_lookup(cid, price_locale)
+        prints = official_prints_lookup(cid, locale)
         if "error" in prints:
-            price_results[key] = card_prices.price_result("official_error", price_locale, prints["error"])
+            price_results[key] = card_prices.price_result("official_error", locale, prints["error"])
         else:
             # Only the rarity asked for here is collected, and only when its stored price is missing or expired.
-            retry_key = (cid, rarity, price_locale)
-            retry = retry_key in state.price_retries
-            state.price_retries.discard(retry_key)
+            retry = key in state.price_retries
+            state.price_retries.discard(key)
             price_results[key] = card_prices.price_with_collection(
-                rarity, price_locale, prints["prints"], price_observations, DATABASE_URL, REDIS_URL,
+                rarity, locale, prints["prints"], price_observations[locale], DATABASE_URL, REDIS_URL,
                 collect=collect_price, fetching=lambda number: st.spinner(f"TCGSHOP에서 {number} 가격 수집 중…"),
                 retry=retry)
     return price_results[key]
@@ -230,18 +242,21 @@ def export_name(row, language_key):
 
 
 def problems_of(row, language_key):
+    if row["locale"] not in exports.LOCALE_LABELS:
+        return "판본 확인 필요: 실물 판본(한국판/일본판)을 확인해 선택하세요."
     if row["card"] is None:
         return row["error"] or "후보를 선택하세요 (자동 확정되지 않은 카드)"
     if not export_name(row, language_key):
         return "선택한 언어의 공식 이름이 없습니다. 내보낼 표시 이름을 직접 입력하거나 언어를 바꾸세요."
-    result = rarity_lookup(row["card"]["cid"])
+    result = rarity_lookup(row["card"]["cid"], row["locale"])
     if "error" in result:
         return result["error"]
     if not result["rarities"]:
         detail = f" ({result['absent']})" if "absent" in result else ""
-        return ("공식 DB에 이 카드의 한국어·일본어(OCG) 판본이 없어 고를 수 있는 레어도가 없습니다. "
-                "이 카드는 내보낼 수 없으므로 삭제하거나 다른 후보를 고르세요." + detail)
-    if row.get("rarity_cid") != row["card"]["cid"] or row.get("rarity") is None:
+        return (f"공식 DB에 이 카드의 {exports.LOCALE_LABELS[row['locale']]} 수록이 없어 고를 수 있는 레어도가 없습니다. "
+                "실물 판본을 확인하고, 맞다면 이 카드는 내보낼 수 없으므로 삭제하거나 다른 후보를 고르세요." + detail)
+    if row.get("rarity_cid") != row["card"]["cid"] or row.get("rarity_locale") != row["locale"] \
+            or row.get("rarity") is None:
         return "레어도를 선택하세요."
     if row["rarity"] not in result["rarities"]:
         return f"선택했던 레어도 {row['rarity']!r}가 이 카드의 공식 레어도 목록에 없습니다. 레어도를 다시 선택하세요."
@@ -257,16 +272,20 @@ def recognition_summary(recognized_rows, overlays, used_references):
     verified_review_count = sum(is_reviewed(row["candidates"][0])
                                 and row["candidates"][0]["review"]["outcome"] == "verified"
                                 for row in recognized_rows)
+    language_error_count = sum(row["language_error"] is not None for row in recognized_rows)
+    unknown_locale_count = sum(row["locale"] is None and row["language_error"] is None for row in recognized_rows)
     empty_images = [name for name, _, count in overlays if count == 0]
     summary = (f"감지 {len(recognized_rows)}장 · 자동 확정 {confirmed_count}장 · 확인 필요 {review_count}장"
-               f" · 공식 DB 조회 실패 {failed_count}장")
+               f" · 공식 DB 조회 실패 {failed_count}장 · 판본 확인 필요 {unknown_locale_count}장"
+               f" · 판본 판별 오류 {language_error_count}장")
     if used_references:
         summary += f" · 공식 이미지 일치 {reference_count}장"
     if verified_review_count:
         summary += f" · 후보 일러스트 검증 {verified_review_count}장"
     if empty_images:
         summary += f" · 카드를 찾지 못한 사진: {', '.join(empty_images)}"
-    all_confirmed = bool(recognized_rows) and confirmed_count == len(recognized_rows) and not empty_images
+    all_confirmed = (bool(recognized_rows) and confirmed_count == len(recognized_rows) and not empty_images
+                     and all(row["locale"] is not None for row in recognized_rows))
     return summary, all_confirmed
 
 
@@ -363,7 +382,8 @@ if signature != state.recognized_signature:
     state.recognized_signature = None
 
 st.info("수량은 사진에 **보이는 카드 장수**로만 셉니다. 덱 편집기 스크린샷의 ×2/×3 배지는 읽지 않으므로 "
-        "아래 목록에서 수량을 직접 확인·수정하세요. 레어도는 사진에서 판별하지 않으므로 카드마다 직접 고르세요.")
+        "아래 목록에서 수량을 직접 확인·수정하세요. 레어도는 사진에서 판별하지 않으므로 카드마다 직접 고르세요. "
+        "실물 판본(한국판/일본판)은 카드 글자의 한글·가나를 OCR로 읽어 판별하며, 근거가 부족하면 확인 필요로 남깁니다.")
 
 can_recognize = bool(images) and len(images) == len(uploads) and not references_blocked
 if st.button("카드 인식", type="primary", disabled=not can_recognize):
@@ -406,10 +426,29 @@ if st.button("카드 인식", type="primary", disabled=not can_recognize):
                         candidates = review["candidates"]
                         # Only full automatic evidence confirms; a weak lead or no evidence stays for review.
                         result_status = "recognized" if review["accepted"] else "review"
+                    # The physical edition is read from the card's own text, independent of the card identity.
+                    # An OCR failure stays visible on its row; the edition is then selected by hand.
+                    status.write(f"판본 판별 {result['index']}/{len(results)}")
+                    detection, language_error, locale = None, None, None
+                    try:
+                        detection = card_language.detect_language(image, result["polygon"])
+                    except card_language.LanguageDetectionError as error:
+                        language_error = f"#{result['index']} 판본 판별 실패: {type(error).__name__}: {error}"
+                        status.write(language_error)
+                    else:
+                        # Only ("classified", "ko" | "ja") and ("review", None) are valid results; anything else is a
+                        # broken detector and fails the recognition instead of passing as uncertain evidence.
+                        valid = ((detection["status"] == "classified" and detection["locale"] in exports.LOCALE_LABELS)
+                                 or (detection["status"] == "review" and detection["locale"] is None))
+                        if not valid:
+                            raise ValueError(f"#{result['index']} 판본 판별 결과가 올바르지 않습니다: "
+                                             f"status={detection['status']!r}, locale={detection['locale']!r}")
+                        locale = detection["locale"]
                     rows.append({"key": uuid.uuid4().hex, "source": "recognized", "image_name": current_name,
                                  "index": result["index"], "crop": result["crop"], "candidates": candidates,
                                  "status": result_status, "choice": None, "card": None, "error": None,
-                                 "quantity": 1, "name_override": ""})
+                                 "quantity": 1, "name_override": "", "locale": locale,
+                                 "language_detection": detection, "language_error": language_error})
                 # Every row starts on its top candidate (reference match first, else highest DRAW2 score);
                 # low-confidence rows keep status "review" so they still need checking.
                 for row in rows:
@@ -450,10 +489,8 @@ for name, overlay, count in state.overlays:
 st.subheader("2. 카드 확인·수정")
 language = st.radio("내보낼 카드명 언어", list(LANGUAGES), horizontal=True)
 language_key = LANGUAGES[language]
-price_locale = PRICE_LOCALES[st.radio(
-    "가격 기준 판본 (실물 카드 언어)", list(PRICE_LOCALES), horizontal=True, key="price_locale",
-    help="가격을 찾을 실물 카드의 언어판입니다. 내보낼 카드명 언어와 별개입니다.")]
-st.info("가격은 서버 가격 DB에 저장된 TCGSHOP 상품을 먼저 읽습니다. 고른 레어도의 가격이 없거나 만료됐을 때만 바로 "
+st.info("가격은 카드마다 고른 **실물 판본**(한국판/일본판) 기준이며, 내보낼 카드명 언어와 별개입니다. 판본이 **확인 필요**인 "
+        "카드는 가격을 찾지 않고 내보낼 수 없습니다. 가격은 서버 가격 DB에 저장된 TCGSHOP 상품을 먼저 읽습니다. 고른 레어도의 가격이 없거나 만료됐을 때만 바로 "
         "상점에서 그 카드 번호를 검색해 저장한 뒤 DB에서 다시 읽습니다. 수집이 실패하면 **수집 실패**와 오류를 표시하고, "
         "카드의 **가격 수집 다시 시도**를 누를 때까지 다시 요청하지 않습니다.")
 st.caption("검색 결과 첫 페이지만 수집하며, 검색 결과가 없으면 **상점 상품 없음**을 12시간 동안 표시합니다. 단가는 저장된 상품 중 재고 있음 상품의 최저가이고, 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품의 최저가를 그 표시와 함께 보여 줍니다. 전체 시장 최저가가 아닙니다. 공식 수록 번호·레어도가 "
@@ -474,21 +511,25 @@ with st.form("add_card", clear_on_submit=True):
             state.rows.append({"key": uuid.uuid4().hex, "source": "manual", "image_name": None, "index": None,
                                "crop": None, "candidates": [], "status": "manual", "choice": None,
                                "card": card, "error": None, "quantity": int(manual_quantity),
-                               "name_override": ""})
+                               "name_override": "", "locale": None, "language_detection": None,
+                               "language_error": None})
 
-# Card numbers of every rarity a row can choose, looked up in the price store once for this run.
+# Card numbers of every rarity a row can choose, looked up in the price store once per edition for this run.
+# Rows whose edition is not confirmed look nothing up.
 price_results = {}
-price_numbers = set()
+price_numbers = {locale: set() for locale in exports.LOCALE_LABELS}
 for row in state.rows:
-    if row["card"] is None:
+    if row["card"] is None or row["locale"] is None:
         continue
-    row_rarities = rarity_lookup(row["card"]["cid"]).get("rarities")
+    row_rarities = rarity_lookup(row["card"]["cid"], row["locale"]).get("rarities")
     if row_rarities and DATABASE_URL and REDIS_URL:
         with st.spinner(f"공식 수록 번호 조회 중… (CID {row['card']['cid']})"):
-            prints = official_prints_lookup(row["card"]["cid"], price_locale)
+            prints = official_prints_lookup(row["card"]["cid"], row["locale"])
         if "prints" in prints:
-            price_numbers.update(card_prices.queryable_numbers(prints["prints"], price_locale, row_rarities))
-price_observations = card_prices.observe_card_numbers(price_numbers, price_locale, DATABASE_URL, REDIS_URL)
+            price_numbers[row["locale"]].update(
+                card_prices.queryable_numbers(prints["prints"], row["locale"], row_rarities))
+price_observations = {locale: card_prices.observe_card_numbers(numbers, locale, DATABASE_URL, REDIS_URL)
+                      for locale, numbers in price_numbers.items()}
 
 if state.rows:
     st.caption("카드 자체가 틀렸다면 표시 이름을 고치지 말고, 인식 후보에서 다시 고르거나 삭제한 뒤 "
@@ -510,6 +551,27 @@ for row in list(state.rows):
             if chosen is not None and is_reviewed(chosen):
                 reference_caption = f"비교한 공식 일러스트 (ciid {chosen['review']['ciid']})"
             reference_column.image(row["card"]["image_path"], caption=reference_caption)
+
+        # Physical edition: preselected only from classified OCR evidence; a manual choice keeps that evidence shown.
+        locale_key = f"locale_{key}"
+        if locale_key not in state:
+            state[locale_key] = row["locale"]
+        row["locale"] = edit_column.selectbox(
+            "실물 판본", LOCALE_CHOICES,
+            format_func=LOCALE_CHOICE_LABELS.__getitem__, key=locale_key, placeholder="확인 필요",
+            help="사진 속 실물 카드의 언어판입니다. 가격과 내보내기의 판본 열에 쓰이며, 내보낼 카드명 언어와 별개입니다.")
+        detection = row["language_detection"]
+        if row["language_error"]:
+            edit_column.error(row["language_error"] + " — OCR이 동작하지 않아 판본을 판별하지 못했습니다. 실물을 보고 직접 고르세요.")
+        elif detection is not None:
+            detected = LOCALE_CHOICE_LABELS[detection["locale"]] if detection["status"] == "classified" else "확인 필요"
+            choice_note = "" if detected == LOCALE_CHOICE_LABELS[row["locale"]] else " · 직접 선택으로 변경됨"
+            edit_column.caption(f"판본 자동 판별: {detected} — {detection['reason']}"
+                                f" ({detection['elapsed_seconds']:.1f}초){choice_note}")
+        elif row["source"] == "manual":
+            edit_column.caption("직접 추가한 카드는 실물 판본을 직접 골라야 합니다.")
+        else:
+            edit_column.caption("판본 판별 이전에 인식된 카드입니다. 실물 판본을 직접 골라야 합니다.")
 
         if row["candidates"]:
             with st.spinner("후보 공식 이름 조회 중…"):
@@ -566,24 +628,30 @@ for row in list(state.rows):
             edit_column.caption(f"한국어: {card['name_ko'] or unavailable} · 일본어: {card['name_ja'] or unavailable}"
                                 f" · 영어: {card['name_en'] or unavailable} · 공식 CID {card['cid']}" + origin)
 
-            # The rarity belongs to one CID: a new or changed card starts on its lowest official rarity
-            # (rows from before this feature have no rarity yet and start there too). Otherwise the
-            # user's choice is kept, and a choice the official list no longer has is never replaced.
-            result = rarity_lookup(card["cid"])
+            # The rarity belongs to one CID in one physical edition: a new or changed card starts on its lowest
+            # official rarity in that edition (rows from before this feature have no rarity yet and start there too).
+            # A changed edition keeps the chosen rarity only when that edition printed it, else starts on its lowest.
+            # Otherwise the user's choice is kept, and a choice the official list no longer has is never replaced.
             rarity_key = f"rarity_{key}"
             if row.get("rarity_cid") != card["cid"]:
                 row["rarity"] = None
                 row["rarity_cid"] = None
-            if "error" in result:
+            result = rarity_lookup(card["cid"], row["locale"]) if row["locale"] is not None else None
+            if result is None:
+                edit_column.caption("레어도·단가: **판본 확인 필요** — 실물 판본을 고르면 그 판본의 레어도와 단가가 표시됩니다.")
+            elif "error" in result:
                 if edit_column.button("레어도 다시 조회", key=f"retry_rarity_{key}"):
-                    del state.rarity_lookups[card["cid"]]
+                    del state.rarity_lookups[(card["cid"], row["locale"])]
                     st.rerun()
             elif result["rarities"]:
                 options = result["rarities"]
+                if row.get("rarity_locale") != row["locale"] and row["rarity"] not in options:
+                    row["rarity_cid"] = None  # the other edition's rarity was never printed in this edition
                 if row["rarity_cid"] is None:
                     row["rarity"] = options[0]
                     row["rarity_cid"] = card["cid"]
                     row["rarity_options"] = None  # forces the widget to show the new default
+                row["rarity_locale"] = row["locale"]
                 # Write the widget only when its options or the row's rarity were reset, so reruns keep the
                 # user's selection; an invalid stored rarity leaves the widget empty instead of picking one.
                 if rarity_key not in state or row.get("rarity_options") != options:
@@ -595,9 +663,9 @@ for row in list(state.rows):
                                                    key=rarity_key, placeholder="레어도를 선택하세요")
                 if selected is not None and selected != row["rarity"]:
                     row["rarity"] = selected
-                edition = {"ja": "일본판", "ko": "한국판"}[price_locale]
+                edition = exports.LOCALE_LABELS[row["locale"]]
                 if row["rarity"] in options:
-                    price = price_of(card["cid"], row["rarity"])
+                    price = price_of(card["cid"], row["rarity"], row["locale"])
                     price_column.metric(f"단가 ({edition})", price_summary(price))
                     if price["status"] in ("out_of_stock", "stock_unknown"):
                         # The amount alone would read as a buyable price, so its availability is shown right below.
@@ -610,14 +678,14 @@ for row in list(state.rows):
                             st.write(f"관찰 {kst(price['observed_at'])} · 만료 {kst(price['expires_at'])}")
                     if price["status"] in ("collection_failed", "not_listed"):
                         if edit_column.button("가격 수집 다시 시도", key=f"retry_price_{key}"):
-                            state.price_retries.add((card["cid"], row["rarity"], price_locale))
+                            state.price_retries.add((card["cid"], row["rarity"], row["locale"]))
                             st.rerun()
                 else:
                     price_column.caption(f"단가 ({edition}): 레어도를 고르면 표시됩니다.")
-                if (card["cid"], price_locale) in state.official_prints \
-                        and "error" in state.official_prints[(card["cid"], price_locale)]:
+                prints_key = (card["cid"], row["locale"])
+                if prints_key in state.official_prints and "error" in state.official_prints[prints_key]:
                     if edit_column.button("공식 수록 정보 다시 조회", key=f"retry_prints_{key}"):
-                        del state.official_prints[(card["cid"], price_locale)]
+                        del state.official_prints[prints_key]
                         st.rerun()
 
         name_column, quantity_column, delete_column = edit_column.columns([4, 1, 1])
@@ -638,10 +706,11 @@ for row in list(state.rows):
 
 # --- 4. Export ------------------------------------------------------------
 st.subheader("3. 내보내기")
-st.caption("기본 열은 카드명·레어도·수량·단가·합계이며, 고른 이름·CID 열은 수량 뒤에, 고른 가격 열(가격 상태·상품 URL·"
+st.caption("기본 열은 카드명·레어도·판본·수량·단가·합계이며, 고른 이름·CID 열은 수량 뒤에, 고른 가격 열(가격 상태·상품 URL·"
            "관찰 시각·수록 번호)은 합계 뒤에 붙습니다. 재고가 확인된 상품이 없으면 품절·재고 확인 불가 상품의 최저가를 쓰고, "
            "가격을 확인할 수 없는 줄은 금액을 비웁니다(가격 상태 열에 이유). 카드는 메인 덱 몬스터 → 마법 → 함정 → "
-           "엑스트라 덱 몬스터 순으로 정렬되고, 같은 카드의 레어도는 낮은 것부터 이어집니다.")
+           "엑스트라 덱 몬스터 순으로 정렬되고, 같은 카드의 레어도는 낮은 것부터 이어집니다. 판본 열은 실물 판본이며, 같은 카드·레어도라도 "
+           "한국판과 일본판은 다른 줄로, 같은 판본은 한 줄로 합쳐집니다.")
 EXPORT_OPTION_LABELS = {"name_ko": "한국어 카드명", "name_ja": "일본어 카드명", "name_en": "영어 카드명", "cid": "CID"}
 optional_fields = []
 for column, (field, label) in zip(st.columns(len(EXPORT_OPTION_LABELS)), EXPORT_OPTION_LABELS.items()):
@@ -659,10 +728,10 @@ unresolved = [row for row in state.rows if problems_of(row, language_key)]
 cards = []
 export_error = None
 if state.rows and not unresolved:
-    entries = [{"cid": row["card"]["cid"], "rarity": row["rarity"], "name": export_name(row, language_key),
-                "name_ko": row["card"]["name_ko"], "name_ja": row["card"]["name_ja"],
-                "name_en": row["card"]["name_en"], "quantity": row["quantity"],
-                "price": price_of(row["card"]["cid"], row["rarity"])} for row in state.rows]
+    entries = [{"cid": row["card"]["cid"], "rarity": row["rarity"], "locale": row["locale"],
+                "name": export_name(row, language_key), "name_ko": row["card"]["name_ko"],
+                "name_ja": row["card"]["name_ja"], "name_en": row["card"]["name_en"], "quantity": row["quantity"],
+                "price": price_of(row["card"]["cid"], row["rarity"], row["locale"])} for row in state.rows]
     try:
         # Validation, aggregation and deck order all succeed or nothing is shown or downloadable.
         cards = exports.sort_cards(exports.aggregate(entries))
@@ -680,22 +749,23 @@ if cards:
                                               optional_price_fields=optional_price_fields)))
                   for card in cards], hide_index=True)
     st.write(f"총 {sum(card['quantity'] for card in cards)}장, {len({card['cid'] for card in cards})}종"
-             f" (카드·레어도별 {len(cards)}줄)")
+             f" (카드·레어도·판본별 {len(cards)}줄)")
 
-# Any change to what would be exported (images, card identity, rarity, language, names, quantities,
-# added or deleted rows, selected optional and price columns, the price edition, the prepared lines with their full
+# Any change to what would be exported (images, card identity, rarity, physical edition, language, names, quantities,
+# added or deleted rows, selected optional and price columns, the prepared lines with their full
 # price record even where a column is not exported, their deck order, including a failed preparation) clears the
 # confirmation, so the user must confirm the final list again. A price that expires shows as a changed status
 # on the next run.
 # signature[:3]: the candidate review mode only matters through the recognized rows it produced.
-export_fingerprint = (signature[:3], language_key, optional_fields, optional_price_fields, price_locale, tuple(
-    (row["key"], row["choice"], row["card"] and row["card"]["cid"], row.get("rarity"), export_name(row, language_key),
-     row["quantity"])
-    for row in state.rows), tuple((card["cid"], card["rarity"], *exports.price_values(card)) for card in cards))
+export_fingerprint = (signature[:3], language_key, optional_fields, optional_price_fields, tuple(
+    (row["key"], row["choice"], row["card"] and row["card"]["cid"], row.get("rarity"), row["locale"],
+     export_name(row, language_key), row["quantity"])
+    for row in state.rows), tuple((card["cid"], card["rarity"], card["locale"], *exports.price_values(card))
+                                  for card in cards))
 if export_fingerprint != state.export_fingerprint:
     state.confirmed = False
     state.export_fingerprint = export_fingerprint
-confirmed = st.checkbox("모든 카드의 이름·수량·레어도를 직접 확인했습니다", key="confirmed", disabled=not cards)
+confirmed = st.checkbox("모든 카드의 이름·수량·레어도·판본을 직접 확인했습니다", key="confirmed", disabled=not cards)
 ready = bool(cards) and confirmed
 # The confirmed prices are valid only until the first of them expires; a later click fails instead of
 # downloading a price that is no longer current (the following rerun shows the expired status).

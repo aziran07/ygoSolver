@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
+from contextlib import closing
 
 import card_prices
 import catalog
@@ -21,7 +22,7 @@ class OfficialMappingTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.db = Path(temporary.name) / "official.sqlite"
-        with sqlite3.connect(self.db) as db:
+        with closing(sqlite3.connect(self.db)) as db, db:
             db.executescript('''
                 CREATE TABLE cards (cid INTEGER PRIMARY KEY, name_ko TEXT, name_ja TEXT);
                 INSERT INTO cards VALUES (5631, '확산하는 파동', '拡散する波動');
@@ -53,7 +54,7 @@ class OfficialMappingTest(unittest.TestCase):
                 self.fetch(**kwargs)
 
     def test_unknown_cid_is_not_resolved_from_a_shop_name(self):
-        with sqlite3.connect(self.db) as db:
+        with closing(sqlite3.connect(self.db)) as db, db:
             db.execute("DELETE FROM cards")
         with self.assertRaises(card_prices.OfficialPrintError):
             self.fetch()
