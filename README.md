@@ -271,7 +271,7 @@ DRAW2가 잘라낸 카드 사진을 이 PC에 등록해 둔 **공식 카드 DB �
 - `postgres`: `postgres:17-bookworm`, 볼륨 `ygosolver_postgres-data` → `/var/lib/postgresql/data`.
 - `redis`: `redis:7-alpine`, 볼륨 `ygosolver_redis-data` → `/data`, 최대 256MB(`volatile-ttl`). 캐시이므로 비어도 다음 조회에서 다시 채워집니다.
 - 둘 다 healthcheck, `restart: unless-stopped`, 로그 회전(json-file 10MB × 3)이며 **호스트 포트를 열지 않습니다**.
-- `prices`(profile `tools`): `Dockerfile.prices`로 만든 CLI 이미지. `prices.py`, `price_store.py`, `requirements-prices.txt`만 들어가며
+- `prices`(profile `tools`): `Dockerfile.prices`로 만든 CLI 이미지. `prices.py`, `price_store.py`, 상점 목록 수집 `shop_catalog_*.py`(아래), `requirements-prices.txt`만 들어가며
   (`.dockerignore` 허용 목록) 비root 사용자(UID 10001)로 실행합니다. 호스트의 `./data/prices`만 `/data/prices`에 읽기 전용으로 연결합니다.
 
 현재 서버 위치: `aziranserver`의 `/home/pilon1945/ygoSolver`(아래 명령은 모두 이 저장소 루트에서 실행).
@@ -392,6 +392,130 @@ python3 tests/acceptance_price_stack.py --recreate   # 컨테이너 재생성 �
 배포 순서: 코드 변경 후 `docker compose build prices web`, **`docker compose run --rm prices init`으로 표를 먼저 만든 뒤** `docker compose up -d web`.
 `init`은 배포 전에 반드시 실행해야 합니다. 시도 기록 표(`price_collection_attempts`)가 `empty`(검색 결과 없음) 결과를 받도록 옮기기 때문이며,
 이를 건너뛰면 기존 설치에서는 상점 요청 뒤 검색 결과 없음을 기록할 때 실패(`database_error`)할 수 있습니다.
+
+### 상점 전체 목록 수집 (`shop_catalog_collect.py`)
+
+카드모아·TCGSHOP의 유희왕 한국판·일본판 싱글카드 분류 **전체 목록 페이지**를 그대로 PostgreSQL에 저장합니다.
+앱 가격(`price_*` 표, `card_prices.py`)과는 **별개의 원본 목록**이며 앱 화면·가격 계산에 쓰이지 않습니다.
+상품을 공식 CID·레어도·판본에 연결하지 않고, 상점이 보여 준 값과 근거를 그대로 남깁니다.
+
+| 상점 | 분류 | 내용 | 2026-10-11 관찰 |
+| --- | --- | --- | --- |
+| `cardmoa` | `101010` | 싱글카드(한) | 33,540개, 페이지당 140개, 240쪽 |
+| `cardmoa` | `102010` | 싱글카드(일) | 32,066개, 페이지당 91개, 353쪽 |
+| `cardmoa` | `101015` | 한글판A급싱글카드 | 16개, 1쪽 |
+| `cardmoa` | `102015` | 일본판A급싱글카드 | 41개, 1쪽 |
+| `tcgshop` | `276` | 싱글카드(한글) | 33,136개, 페이지당 56개, 592쪽 |
+| `tcgshop` | `288` | 싱글카드(일본) | 30,743개, 페이지당 56개, 549쪽 |
+| `tcgshop` | `491` | 지못미_A급카드(한·일 혼합) | 860개, 16쪽 |
+
+러시 듀얼·영문판·박스 분류는 범위 밖입니다. 다만 위 분류에 상점이 올린 박스 등 싱글이 아닌 상품은 분류하지 않고 그대로 저장합니다.
+
+- **표**(`shop_catalog_store.py`, `init`이 만듦): `shop_catalog_runs`(분류별 수집 실행·상태·총계),
+  `shop_catalog_pages`(페이지별 원본 응답 gzip·SHA-256·관찰 시각·파싱 결과),
+  `shop_catalog_products`(실행별 상품 1행 + 원본 근거 JSON), `shop_catalog_failures`(실패 이력, 지우지 않음).
+- **상품 값**: `card_number`는 상점이 찍은 코드에서 바깥 괄호만 뺀 값입니다(`SK2-038`, `SRL-K080`, `VP24-JP002(신)` 그대로). 검증된 공식 수록 번호가 아닙니다.
+  `locale`은 상품의 근거로만 정합니다. 코드의 `-KR`/`-JP`, TCGSHOP의 `한글판`/`일본판` 표시가 근거이며, 근거가 없거나 서로 다르면 `null`이고
+  `raw.locale_evidence`에 이유를 남깁니다. 분류 이름은 근거로 쓰지 않습니다. 카드모아 한글판 A급 분류에도 `EEN-JP037` 일본판이 있습니다.
+  판매가는 숫자로 정확히 읽고, 할인 전 가격(취소선)은 `list_price_krw`에 둡니다. 판매가가 없는 상품도 저장합니다. 예: TCGSHOP 오래된 상품은 가격 없이 `stop_product.gif`만 보입니다.
+  이 경우 `price_krw`는 `null`, `raw.price_error`에 이유를 남기며 0원으로 바꾸지 않습니다. 재고는 품절 표시·장바구니 버튼 근거로 `in_stock`/`out_of_stock`/`unknown`입니다.
+  A급·B급 같은 상태 표시와 원래 문구는 모두 `raw`에 있습니다.
+- **페이지 검증**: 요청한 분류·쪽 번호인지, 페이지 이동 링크의 총계가 모두 같은지, 쪽마다 상품 수가 맞는지 확인합니다.
+  카드모아는 숨은 값과 보이는 판매가가 같은지, 품절 표시와 장바구니 버튼이 동시에 있지 않은지도 확인합니다. 하나라도 다르면 그 페이지는 실패입니다.
+  카드모아는 페이지당 상품 수가 분류마다 달라서 1쪽에서 정하고 이후 쪽에 적용합니다.
+  두 상점 모두 EUC-KR(CP949) 응답입니다. 카드모아 페이지에는 메뉴 부분에 UTF-8 문자가 섞여 있어, 상품·총계·페이지 이동 부분만 엄격히 읽습니다.
+  그 부분에 읽을 수 없는 바이트가 있으면 실패입니다. 원본 응답은 바이트 그대로 저장합니다.
+- **요청**: 페이지마다 GET 한 번, 리다이렉트를 따르지 않고 자동 재시도하지 않습니다(연결 5초·읽기 20초).
+  한 프로세스 안에서 요청 **시작** 사이를 `--delay`초(최소 1초) 이상 둡니다. 두 상점은 별도 프로세스로 동시에 돌려도 되지만 같은 상점의 분류는 하나씩 차례로 돌립니다.
+  TCGSHOP `robots.txt`는 `Crawl-delay: 43200`(요청 사이 12시간)을 명시합니다. 전체 분류 수집은 이를 따르지 않으며 실행 여부는 운영자가 정합니다.
+  카드모아 `robots.txt`는 404 페이지로 리다이렉트됩니다.
+- **완료·실패·재개**: 1쪽부터 마지막 쪽까지 모두 저장되고 고유 상품 수가 상점 총계와 정확히 같을 때만 `completed`입니다.
+  HTTP·파싱·저장 오류는 쪽 번호·URL·이유와 함께 실행을 `failed`로 기록하며, 이미 저장한 페이지는 남깁니다.
+  `--run-id`로 같은 상점·분류의 실행을 이어서 하면 실패한 실행을 다시 열고, 저장된 쪽은 건너뛰며, 총계와 카드모아 페이지 크기는 저장된 페이지에서 가져옵니다.
+  수집 중 상점 상품이 추가·삭제되어 총계가 바뀌거나 같은 상품이 다시 나오면 실패하며, 이때는 새 실행이 필요합니다. 두 상점 모두 최근 등록순이라 수집 중 변동이 생길 수 있습니다.
+  `--max-pages N`은 이번 호출에서 받을 쪽 수를 제한한 부분 수집입니다. 실행은 `running`으로 남고 완료로 표시되지 않습니다.
+  Ctrl+C 등으로 중단된 실행도 `running`으로 남으므로 `--run-id`로 이어서 합니다.
+  모든 쪽은 저장됐지만 완료 처리에서 실패한 실행도 `--run-id`로 다시 실행하면 상점 요청 없이 완료됩니다. 실패한 실행은 `--run-id`를 줄 때만 다시 열리며,
+  이전 실패는 `shop_catalog_failures`에 남습니다(`status`의 `failure_count`). 실패 기록 자체가 실패하면(예: DB 연결 끊김) 두 원인을 함께 오류로 냅니다.
+  완료된 실행이나 다른 상점·분류의 실행 ID는 상점에 요청하기 전에 거부합니다.
+- **종료 코드**: 0 완료(또는 `status` 출력), 3 `--max-pages`로 중간에 멈춤, 1 실패, 2 잘못된 인자.
+  진행 상황(실행 ID, 분류, 쪽/전체, 그 쪽의 가격 있는·없는 상품 수, 저장된 쪽·상품 수/전체)은 쪽마다 표준 오류로 바로 출력합니다.
+  끝나면 실행 정보(`status`와 같은 JSON)를 표준 출력에 냅니다.
+
+`prices` 이미지로 실행합니다(이미지에 `shop_catalog_*.py`와 `requests`가 들어 있음, 코드를 바꾼 뒤 `docker compose build prices`).
+실패한 응답 원본을 남기려면 쓰기 가능한 디렉터리를 연결해 `--evidence-dir`로 지정합니다(`/data/prices`는 읽기 전용).
+실패한 쪽마다 `run<ID>-page<N>-<UTC시각>.body`(응답 본문 그대로)와 `.json`(요청 URL, 상태 코드, Content-Type, 관찰 시각, SHA-256, 크기, 오류)을 만들며,
+요청·응답 헤더와 쿠키는 남기지 않습니다. 디렉터리가 없으면 만들고, 쓰기에 실패하면 그 이유가 실행 오류에 함께 기록됩니다:
+
+```sh
+docker compose build prices
+docker compose run --rm --entrypoint python prices shop_catalog_collect.py init
+install -d -m 700 data/shop_catalog/evidence
+docker compose run --rm --user "$(id -u):$(id -g)" -v "$PWD/data/shop_catalog/evidence:/evidence" --entrypoint python prices \
+  shop_catalog_collect.py collect --shop cardmoa --category 101010 --delay 1.0 --evidence-dir /evidence
+docker compose run --rm --entrypoint python prices shop_catalog_collect.py status --run-id 1
+docker compose run --rm --entrypoint python prices shop_catalog_collect.py collect --shop cardmoa --category 101010 --run-id 1
+```
+
+예상 규모(2026-10-11 관찰): 카드모아 595쪽·TCGSHOP 1,157쪽, 요청당 약 3초로 카드모아 약 30분·TCGSHOP 약 1시간입니다.
+원본 gzip은 쪽당 약 55KB, 전체 실행 약 96MB입니다.
+
+실행별 가격 있는 상품과 가격 없는 상품(`price_krw`가 `null`) 수입니다. `completed` 실행만 그 분류 전체입니다:
+
+```sh
+docker compose exec -T postgres psql -U ygosolver -d ygosolver -c "
+SELECT r.id, r.shop, r.category, r.status, r.total_products,
+       count(p.product_id) AS stored, count(p.price_krw) AS priced,
+       count(p.product_id) - count(p.price_krw) AS price_unavailable
+FROM shop_catalog_runs r LEFT JOIN shop_catalog_products p ON p.run_id = r.id
+GROUP BY r.id ORDER BY r.id"
+```
+
+#### 판본·수록 번호·레어도별 최저가 (`shop_catalog_lowest_prices` 뷰)
+
+`init`이 만드는 PostgreSQL 뷰입니다. 저장된 상품을 읽기만 하며 원본 표(`shop_catalog_*`)와 앱 가격 표(`price_*`)는 바꾸지 않습니다. 앱 가격 조회는 이 뷰를 쓰지 않습니다.
+열: `locale`, `card_number`, `rarity_label`, `rarity_mapping_status`, `price_krw`, `shop`, `product_id`, `product_url`, `run_id`, `page_number`, `observed_at`.
+
+- **어느 실행인가**: 상점·분류마다 **가장 최근 실행(가장 큰 ID) 하나만** 보고, 그 실행이 `completed`일 때만 씁니다.
+  최근 실행이 `running`이거나 `failed`이면 그 분류는 뷰에서 빠지며, **이전 완료 실행으로 대신하지 않습니다**(오래된 가격을 섞지 않음). 그 실행을 `--run-id`로 이어서 완료하거나 새 실행을 끝까지 완료해야 다시 나타납니다.
+- **묶는 기준**: 판본(`locale`) + 상점이 찍은 **수록 번호** + 레어도입니다. 공식 CID로 확인한 연결이 아니며 카드 이름도 쓰지 않습니다.
+  수록 번호에서는 상점이 붙인 상태 등급 표기만 지웁니다: 끝의 `A급`, `(A급)`, ` (A급)`(B급·C급도 같은 형태). 예: `RC02-KR003A급` → `RC02-KR003`, `DE01-JP158(A급)` → `DE01-JP158`.
+  `VP24-JP002(신)`, `26LP-KR002(마크)` 같은 다른 표기는 다른 인쇄일 수 있어 그대로 둡니다.
+- **최저가**: 상태(A급·B급 등)와 재고를 따지지 않은 숫자 판매가의 최솟값이며 두 상점을 합쳐 비교합니다. **품절 상품이 최저가일 수 있습니다**.
+  같은 가격이면 상점 이름(`cardmoa` < `tcgshop`), 그다음 숫자 상품 ID가 작은 쪽입니다. 어느 상품인지는 `shop`·`product_id`·`product_url`·`run_id`·`page_number`·`observed_at`으로 확인합니다.
+- **빠지는 상품**: 판본(`locale`)·수록 번호·레어도 표시가 없거나 판매가가 `NULL`인 상품은 최저가 계산에서 빠집니다(0원으로 바꾸지 않음). 원본 행은 `shop_catalog_products`에 그대로 있습니다.
+- **레어도**(`rarity_mapping_status`): 뷰 안의 `rarity_labels` 목록에 있는 **정확한 상점 표기**만 연결합니다.
+  - `verified_alias`: 공식 마감 하나를 가리키는 표기이며 공식 한국어 이름(`rarities.py`)으로 바꿔 두 상점을 함께 비교합니다.
+    카드모아 `노멀`·`레어`·`슈퍼레어`·`울트라레어`·`얼티미트레어`·`홀로그래픽레어`·`씨크릿레어`·`엑스트라 씨크릿레어`,
+    TCGSHOP `Normal`·`Rare`·`Super Rare`·`Ultra Rare`·`Ultimate Rare`·`Holographic Rare`·`Collectors Rare`·`Extra Secret Rare`.
+    같은 수록 번호를 두 상점이 모두 올린 수집 표본은 `WC08-KR002`(`울트라레어`=`Ultra Rare`), `RATE-JP078`(`슈퍼레어`=`Super Rare`) 두 건이며,
+    나머지는 공식 이름과 같은 이름(띄어쓰기·`씨크릿` 표기만 다름)이라는 근거입니다. 상점이 색 변형(예: 일본판 울트라 레어 RED Ver.)을 같은 표기로 올리면 구분하지 못합니다.
+  - `exact_shop_label`: 마감 하나를 뜻하지만 한 상점만 쓰는 표기(`cardmoa:시크릿스페셜레드버젼`, `cardmoa:DT-노멀`, `tcgshop:UR OverFrame`, `tcgshop:PSC OverFrame`, `tcgshop:KC Rare`).
+    그 상점 안에서만 묶으며 기본 레어도와 섞지 않습니다.
+  - `unverified_finish`: 목록에 없는 모든 표기입니다. 여러 마감을 함께 가리킬 수 있어(예: TCGSHOP `Secret Rare`는 `..._SpecialRedVer.` 상품에도 쓰임; `Prismatic Secret Rare`, `Parallel Rare`,
+    카드모아 `페러럴레어`·`노멀레어`·`쿼터센츄리시크` 등) **묶지 않고 상품마다 한 행**(`<shop>:<표기>`)으로 보여 줍니다. 더 싼 다른 마감을 대신 고르지 않습니다.
+
+```sh
+docker compose exec -T postgres psql -U ygosolver -d ygosolver -c "
+SELECT * FROM shop_catalog_lowest_prices WHERE card_number = 'WC08-KR002' AND locale = 'ko'"
+```
+
+최근 실행의 저장 건수·누락된 상품 정보와 최저가 뷰의 마감 미확인 행 수입니다. 실행 상태가 `completed`인지 함께 확인합니다:
+
+```sh
+docker compose exec -T postgres psql -U ygosolver -d ygosolver -c "
+WITH latest AS (SELECT DISTINCT ON (shop, category) id, shop, category, status
+                FROM shop_catalog_runs ORDER BY shop, category, id DESC)
+SELECT l.shop, l.category, l.status, count(p.product_id) AS products,
+       count(p.product_id) FILTER (WHERE p.locale IS NULL) AS no_locale,
+       count(p.product_id) FILTER (WHERE p.card_number IS NULL) AS no_card_number,
+       count(p.product_id) FILTER (WHERE p.rarity_label IS NULL) AS no_rarity,
+       count(p.product_id) FILTER (WHERE p.price_krw IS NULL) AS no_price
+FROM latest l LEFT JOIN shop_catalog_products p ON p.run_id = l.id
+GROUP BY l.shop, l.category, l.status ORDER BY l.shop, l.category"
+docker compose exec -T postgres psql -U ygosolver -d ygosolver -c "
+SELECT shop, rarity_mapping_status, count(*) FROM shop_catalog_lowest_prices GROUP BY 1, 2 ORDER BY 1, 2"
+```
 
 ### 앱의 가격 표시 (`card_prices.py`)
 
