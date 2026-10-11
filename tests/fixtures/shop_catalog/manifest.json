@@ -1,0 +1,132 @@
+{
+  "cardmoa_ko_first": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=101010",
+    "observed_at": "2026-10-11T08:26:42.565171+00:00",
+    "response_sha256": "2964dd5bda0d0215f7486818e40c5fe9b667cc289cfad91e82cd718d68415e24",
+    "fixture_sha256": "2642700e78dfde0b6aba574830431e222a541a8b4f9926f8b40869b3eb19fe2a",
+    "total_products": 33540,
+    "total_pages": 240,
+    "page_number": 1,
+    "product_count": 140
+  },
+  "tcgshop_ko_first": {
+    "url": "http://www.tcgshop.co.kr/goods_list.php?Index=276",
+    "observed_at": "2026-10-11T08:26:45.628257+00:00",
+    "response_sha256": "f31c451d60a410cc3017fd85fdec1b1dfb7a15cf8895ccf3ad274211e9cfefc1",
+    "fixture_sha256": "32c3497a7cd03b57b6b3994268c15e0549119c647fdec2c88887b59fde20d316",
+    "total_products": 33136,
+    "total_pages": 592,
+    "page_number": 1,
+    "product_count": 56
+  },
+  "cardmoa_ko_last": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=101010&skin=&ev_id=&sort=&page=240",
+    "observed_at": "2026-10-11T08:28:33.673953+00:00",
+    "response_sha256": "d4752c869fae65443f813ffa66e770b41e431477e2694f6f3aea06c9df56509e",
+    "fixture_sha256": "a2896b955d637519777171a1c4a23131915f772ad6dc6c9cc298c5c1d506162b",
+    "total_products": 33540,
+    "total_pages": 240,
+    "page_number": 240,
+    "product_count": 80
+  },
+  "tcgshop_ko_last": {
+    "url": "http://www.tcgshop.co.kr/goods_list.php?data=offset%3D33096%26letter_no%3D40%26pagecnt%3D59%26search%3D%26searchstring%3D&Index=276&sort=3&searchstring=",
+    "observed_at": "2026-10-11T08:28:36.569189+00:00",
+    "response_sha256": "983d07ebc56c67935d100aaa05fe389ced50b8f693644ae660a98b43e60feece",
+    "fixture_sha256": "4cc19149a0ef79bcf78356ff9297435c35162b4dc963c0ecbdbd9bf911f0fa5c",
+    "total_products": 33136,
+    "total_pages": 592,
+    "page_number": 592,
+    "product_count": 40
+  },
+  "cardmoa_ja_first": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=102010",
+    "observed_at": "2026-10-11T08:28:39.717388+00:00",
+    "response_sha256": "0b580e8ca63cfd317339925cbd8471654ddc88d59c43ba9be666744c40edac00",
+    "fixture_sha256": "3889fe7ce55369b4d9914b18b841315497b9c759a8e3e1c721e8e96d077c0335",
+    "total_products": 32066,
+    "total_pages": 353,
+    "page_number": 1,
+    "product_count": 91
+  },
+  "tcgshop_ja_first": {
+    "url": "http://www.tcgshop.co.kr/goods_list.php?Index=288",
+    "observed_at": "2026-10-11T08:28:42.340739+00:00",
+    "response_sha256": "3f103ecca981ca8f6635a24309ca1b2d49f87def5269c048b54c6900c761e788",
+    "fixture_sha256": "d1324b35c788551f836fd61ac1d2289cbb9363e0a4f9d8078512d543549c8db0",
+    "total_products": 30743,
+    "total_pages": 549,
+    "page_number": 1,
+    "product_count": 56
+  },
+  "cardmoa_ja_last": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=102010&skin=&ev_id=&sort=&page=353",
+    "observed_at": "2026-10-11T08:29:54.754966+00:00",
+    "response_sha256": "70a81388d741e1143ef98763678ad27e8cd9c52aaf19008138fc6d4bf5dc275d",
+    "fixture_sha256": "2c9a31c8a6b9851bb779db9a71c3bd8ea6fa304844a129850c946d1ea4476b3f",
+    "total_products": 32066,
+    "total_pages": 353,
+    "page_number": 353,
+    "product_count": 34
+  },
+  "tcgshop_ja_last": {
+    "url": "http://www.tcgshop.co.kr/goods_list.php?data=offset%3D30688%26letter_no%3D55%26pagecnt%3D54%26search%3D%26searchstring%3D&Index=288&sort=3&searchstring=",
+    "observed_at": "2026-10-11T08:29:58.030482+00:00",
+    "response_sha256": "eefa4ff520be74669b16648a5110fb486e826f9e6ef197e12803dce377b1f076",
+    "fixture_sha256": "518e645e76e27eb8996043063f0a7c3f9ea6cfaa53ea8d70233eaa16065cff9f",
+    "total_products": 30743,
+    "total_pages": 549,
+    "page_number": 549,
+    "product_count": 55
+  },
+  "cardmoa_ko_condition": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=101015",
+    "observed_at": "2026-10-11T08:32:11.387563+00:00",
+    "response_sha256": "4b998910f608ea0359ad6bbdfd1a03616369b783fe42fd04eb4a4ce9374a4cac",
+    "fixture_sha256": "46e5af937230c41e241ac9f3d5e2e3bce5881d0a5513957727fedaead3aaccac",
+    "total_products": 16,
+    "total_pages": 1,
+    "page_number": 1,
+    "product_count": 16
+  },
+  "tcgshop_condition": {
+    "url": "http://www.tcgshop.co.kr/goods_list.php?Index=491",
+    "observed_at": "2026-10-11T08:32:14.598019+00:00",
+    "response_sha256": "08ef9150e29abecdb222689d6803eed7c3d00c63e738aa5fece9ce7026f22d06",
+    "fixture_sha256": "b7dc1e14eafc8d22f40fab687088652a6f6e35c0f2023943b79889e64e1121e9",
+    "total_products": 860,
+    "total_pages": 16,
+    "page_number": 1,
+    "product_count": 56
+  },
+  "cardmoa_ja_condition": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=102015",
+    "observed_at": "2026-10-11T08:32:16.520843+00:00",
+    "response_sha256": "41322402f02275af244440a590c51e817ca542e7511e68e4485ffb1c661cda77",
+    "fixture_sha256": "39cb15514670082b63474c353e6f3b59dd683a7537b286104d8251786c6daa3a",
+    "total_products": 41,
+    "total_pages": 1,
+    "page_number": 1,
+    "product_count": 41
+  },
+  "cardmoa_ko_page2": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=101010&skin=&ev_id=&sort=&page=2",
+    "observed_at": "2026-10-11T09:04:11.116832+00:00",
+    "response_sha256": "cf735d313346da84f8d962128124d281915b5ee321ddda0fa884974b21235b2c",
+    "fixture_sha256": "853f5b5ec7b2c5a93bed3ab3a3c4a3fdeeba77cd769e02de07c04608dd6808b0",
+    "total_products": 33540,
+    "total_pages": 240,
+    "page_number": 2,
+    "product_count": 140
+  },
+  "cardmoa_ko_page235": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=101010&skin=&ev_id=&sort=&page=235",
+    "observed_at": "2026-10-11T09:05:58.190361+00:00",
+    "response_sha256": "cf24cdef4bcadf426ec72462be0cf80eedb892331827906a307bc68c0d9b78cc",
+    "fixture_sha256": "407467ac25a7176bdc4e22c23e4c94ca008fd8d5f67bee03ee304b6b881a748f",
+    "total_products": 33540,
+    "total_pages": 240,
+    "page_number": 235,
+    "product_count": 140
+  }
+}
