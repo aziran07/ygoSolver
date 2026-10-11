@@ -128,5 +128,15 @@
     "total_pages": 240,
     "page_number": 235,
     "product_count": 140
+  },
+  "cardmoa_ko_page17": {
+    "url": "http://cardmoa.com/shop/list.php?ca_id=101010&skin=&ev_id=&sort=&page=17",
+    "observed_at": "2026-10-11T09:07:38.046690+00:00",
+    "response_sha256": "65048780d111eb9665772d4817aa5a2e5c8b237cac6c067220e8bf3663563444",
+    "fixture_sha256": "a4c832cf8bc73f6d893b0698a23b5057841a9be67441f6375ec64691ada130c4",
+    "total_products": 33540,
+    "total_pages": 240,
+    "page_number": 17,
+    "product_count": 140
   }
 }

@@ -160,8 +160,8 @@ def item_locale(code_inner, edition_labels):
         return locales.pop(), "; ".join(evidence)
     if locales:
         return None, "conflicting item evidence: " + "; ".join(evidence)
-    return None, (f"no item locale evidence: printed code {code_inner!r} has no -KR/-JP/-EN region and no edition"
-                  " label; the category is not item evidence")
+    printed = f"printed code {code_inner!r} has no -KR/-JP/-EN region" if code_inner else "no printed card code"
+    return None, f"no item locale evidence: {printed} and no edition label; the category is not item evidence"
 
 
 def printed_code(code_text, url, product_id):
@@ -273,10 +273,12 @@ def cardmoa_product(table, form, category, url):
     if len(visible_names) != 1:
         raise ShopCatalogParseError(f"{url}: product {product_id} shows {len(visible_names)} linked names")
 
+    # main_code texts: (CODE) then rarity. Non-card listings (e.g. card cases) print none; their code and rarity
+    # stay absent and raw.identity_evidence says so. Three or more texts are ambiguous and fail the page.
     codes = [text_of(font) for font in table.select("font.main_code")]
-    if len(codes) not in (1, 2):
+    if len(codes) > 2:
         raise ShopCatalogParseError(f"{url}: product {product_id} has {len(codes)} main_code texts {codes}")
-    code_text = codes[0]
+    code_text = codes[0] if codes else None
     rarity_text = codes[1] if len(codes) == 2 else None
     card_number = printed_code(code_text, url, product_id)
     card_types = [text_of(font) for font in table.select("font.card_type")]
@@ -296,8 +298,10 @@ def cardmoa_product(table, form, category, url):
            "card_code_text": code_text, "rarity_text": rarity_text, "card_type_texts": card_types,
            "card_type2_texts": card_types2, "rarity_label_texts": rarity_parts,
            "edition_condition_texts": edition_condition, "unrecognized_label_texts": unrecognized,
-           "condition_evidence": [text for text in [code_text, *card_types, *card_types2] if "급" in text],
+           "condition_evidence": [text for text in [code_text, *card_types, *card_types2] if text and "급" in text],
            "hidden_it_amount": hidden_amount}
+    if not codes:
+        raw["identity_evidence"] = "listing prints no main_code: no card code and no rarity"
 
     amounts = table.select("span.amount")
     if len(amounts) > 1:

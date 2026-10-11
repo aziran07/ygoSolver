@@ -26,7 +26,7 @@ def parse(name, body=None, url=None):
     body = fixture(name) if body is None else body
     url = MANIFEST[name]["url"] if url is None else url
     if name.startswith("cardmoa"):
-        size = 140 if name in ("cardmoa_ko_last", "cardmoa_ko_page2", "cardmoa_ko_page235") else 91 if name == "cardmoa_ja_last" else None
+        size = 140 if name.startswith("cardmoa_ko_") and MANIFEST[name]["page_number"] > 1 else 91 if name == "cardmoa_ja_last" else None
         return parser.parse_cardmoa_page(body, url, page_size=size)
     return parser.parse_tcgshop_page(body, url)
 
@@ -110,6 +110,15 @@ class CatalogSourceContracts(unittest.TestCase):
         self.assertEqual(row["name"], "시크릿샤이니박스")
         self.assertTrue(row["raw"])
         self.assertTrue(not row.get("rarity_label"))
+
+    def test_accessory_misfiled_as_single_card_keeps_price_without_invented_identity(self):
+        row = next(row for row in parse("cardmoa_ko_page17")["products"] if row["product_id"] == "1623460051")
+        self.assertEqual((row["price_krw"], row["list_price_krw"]), (1000, 7000))
+        self.assertEqual(row["name"], "쿼터센츄리_탑로딩카드홀더_골드")
+        self.assertIsNone(row["locale"])
+        self.assertIsNone(row.get("card_number"))
+        self.assertIsNone(row.get("rarity_label"))
+        self.assertTrue(row["raw"]["locale_evidence"])
 
     def test_unrelated_mixed_encoding_is_separate_from_invalid_product_text(self):
         body = fixture("cardmoa_ko_first")
