@@ -130,6 +130,15 @@ class CatalogSourceContracts(unittest.TestCase):
         self.assertIsNone(row["locale"])
         self.assertTrue(row["raw"]["locale_evidence"])
 
+    def test_phone_inquiry_is_unpriced_despite_displayed_full_discount(self):
+        row = next(row for row in parse("cardmoa_ja_page171")["products"] if row["product_id"] == "1517869862")
+        self.assertEqual((row["name"], row["card_number"], row["locale"]), ("텍스체인저", "ST19-JP019", "ja"))
+        self.assertIsNone(row["price_krw"])
+        self.assertEqual(row["list_price_krw"], 300)
+        self.assertEqual(row["raw"]["price_text"], "전화문의")
+        self.assertEqual(row["raw"]["hidden_it_amount"], "전화문의")
+        self.assertTrue(row["raw"]["price_error"])
+
     def test_malformed_present_card_number_cannot_be_reinterpreted_as_a_rarity(self):
         for name, before in (("cardmoa_ko_first", b"(BP1-KR163)"),
                              ("cardmoa_ja_page160", "페러럴레어".encode("euc-kr"))):
@@ -159,10 +168,11 @@ class CatalogSourceContracts(unittest.TestCase):
                 parse(name, url=bad_url)
 
     def test_cardmoa_hidden_visible_price_disagreement_fails(self):
-        body = fixture("cardmoa_ko_first").replace(b"name=it_amount value='1200'", b"name=it_amount value='9999'", 1)
-        self.assertNotEqual(body, fixture("cardmoa_ko_first"))
-        with self.assertRaises(ShopCatalogError):
-            parse("cardmoa_ko_first", body)
+        for hidden in (b"9999", "전화문의".encode("euc-kr")):
+            body = fixture("cardmoa_ko_first").replace(b"name=it_amount value='1200'", b"name=it_amount value='" + hidden + b"'", 1)
+            self.assertNotEqual(body, fixture("cardmoa_ko_first"))
+            with self.subTest(hidden=hidden), self.assertRaises(ShopCatalogError):
+                parse("cardmoa_ko_first", body)
 
     def test_displayed_name_is_authoritative_and_hidden_name_remains_evidence(self):
         original = fixture("cardmoa_ko_first")

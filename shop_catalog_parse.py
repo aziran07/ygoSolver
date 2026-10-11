@@ -266,9 +266,8 @@ def cardmoa_product(table, form, category, url):
     if product_id != form_id or not ASCII_NUMBER.fullmatch(product_id):
         raise ShopCatalogParseError(f"{url}: form {form_id} carries it_id {product_id!r}")
     hidden_name = hidden("it_name")
+    # Checked against the visible price below; it is non-numeric (e.g. "전화문의") when the price is by inquiry.
     hidden_amount = hidden("it_amount")
-    if not ASCII_NUMBER.fullmatch(hidden_amount):
-        raise ShopCatalogParseError(f"{url}: product {product_id} hidden it_amount {hidden_amount!r} is not a number")
 
     allowed_links = {link.format(product_id=product_id) for link in CARDMOA_ITEM_LINKS}
     visible_names = []
@@ -327,11 +326,15 @@ def cardmoa_product(table, form, category, url):
     raw["price_text"] = text_of(amounts[0]) if amounts else None
     price = None
     if not amounts:
-        raw["price_error"] = f"listing shows no sale price (span.amount); hidden it_amount={hidden_amount}"
+        raw["price_error"] = f"listing shows no sale price (span.amount); hidden it_amount={hidden_amount!r}"
     else:
         price, price_error = sale_price(raw["price_text"], url, product_id)
         if price is None:
-            raw["price_error"] = f"{price_error}; hidden it_amount={hidden_amount}"
+            # e.g. 전화문의 (price by phone inquiry): no price, never the hidden or struck value.
+            raw["price_error"] = f"{price_error}; hidden it_amount={hidden_amount!r}"
+        elif not ASCII_NUMBER.fullmatch(hidden_amount):
+            raise ShopCatalogParseError(f"{url}: product {product_id} visible price {raw['price_text']!r} but hidden "
+                                        f"it_amount {hidden_amount!r} is not a number")
         elif price != int(hidden_amount):
             raise ShopCatalogParseError(f"{url}: product {product_id} visible price {raw['price_text']!r} differs "
                                         f"from hidden it_amount {hidden_amount}")
