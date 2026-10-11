@@ -57,14 +57,19 @@ OFFICIAL_NAME_KEY_ALIASES = {
     "invoked baybarron": "invoked babalon",
     # The model labels passcode 30271097 with an HTML-escaped ampersand.
     "the fallen & the virtuous": "the fallen &amp; the virtuous",
+    # The model labels passcode 7594154 (cid 22992) by its romanized Japanese name.
+    "zenna's deceiving doll maidens": "zenna-no-tsuinagihime",
 }
 # Konami's search finds nothing for some model names, so these keys are searched by their
 # official English name instead (verified live in data/experiments/babalon_name/: "Invoked
 # Babalon" returns 0 results, "Invoked Baybarron" returns exactly cid 22980, passcode 70383419;
-# "The Fallen &amp; The Virtuous" returns 0, "The Fallen & The Virtuous" exactly cid 22089).
+# "The Fallen &amp; The Virtuous" returns 0, "The Fallen & The Virtuous" exactly cid 22089;
+# data/experiments/zenna_name/: "Zenna-no-Tsuinagihime" returns 0, "Zenna's Deceiving Doll
+# Maidens" exactly cid 22992, passcode 7594154).
 OFFICIAL_SEARCH_KEYWORDS = {
     "invoked babalon": "Invoked Baybarron",
     "the fallen &amp; the virtuous": "The Fallen & The Virtuous",
+    "zenna-no-tsuinagihime": "Zenna's Deceiving Doll Maidens",
 }
 
 
