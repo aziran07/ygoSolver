@@ -68,6 +68,15 @@ CARDMOA_ITEM_LINKS = ("../shop/item.php?it_id={product_id}", "http://cardmoa.com
 CARDMOA_TOTAL = re.compile(r"총 ([0-9]{1,3}(?:,[0-9]{3})*) ?개의 상품이 있습니다\.")
 CARDMOA_NAV_LINK = re.compile(r"/shop/list\.php\?ca_id=([0-9a-z]+)&skin=&ev_id=&sort=&page=([0-9]+)")
 CARDMOA_FORM = re.compile(r"fitem([0-9]+)")
+# Rarity texts observed as the second main_code row of Cardmoa listings (stored pages, 2026-10-11). A listing with
+# a single unparenthesized main_code (no code row, e.g. 1561637852 특제카드디스플레이스탠드 "페러럴레어") is read as a
+# rarity only when the text is exactly one of these; the markup of code and rarity rows is otherwise identical.
+CARDMOA_RARITY_LABELS = frozenset({
+    "노멀", "레어", "슈퍼레어", "울트라레어", "얼티미트레어", "씨크릿레어", "페러럴레어", "홀로그래픽레어",
+    "노멀레어", "DT-노멀", "시크릿스페셜레드버젼", "시크릿스페셜블루버젼", "씨크릿-페러럴레어", "슈퍼-페러럴레어",
+    "울트라-페러럴레어", "20th-씨크릿레어", "프리즈마틱씨크릿레어", "프리미엄골드레어", "쿼터센츄리시크",
+    "엑스트라 씨크릿레어",
+})
 
 TCGSHOP_PAGE_SIZE = 56
 TCGSHOP_LIST_URL = prices.LIST_URL_PREFIX + "?Index={category}"
@@ -274,12 +283,19 @@ def cardmoa_product(table, form, category, url):
         raise ShopCatalogParseError(f"{url}: product {product_id} shows {len(visible_names)} linked names")
 
     # main_code texts: (CODE) then rarity. Non-card listings (e.g. card cases) print none; their code and rarity
-    # stay absent and raw.identity_evidence says so. Three or more texts are ambiguous and fail the page.
+    # stay absent and raw.identity_evidence says so. A single text is the code when parenthesized, the rarity
+    # when it is exactly a known rarity label, and fails otherwise. Three or more texts fail the page.
     codes = [text_of(font) for font in table.select("font.main_code")]
     if len(codes) > 2:
         raise ShopCatalogParseError(f"{url}: product {product_id} has {len(codes)} main_code texts {codes}")
-    code_text = codes[0] if codes else None
-    rarity_text = codes[1] if len(codes) == 2 else None
+    if len(codes) == 1 and not codes[0].startswith("("):
+        if codes[0] not in CARDMOA_RARITY_LABELS:
+            raise ShopCatalogParseError(f"{url}: product {product_id} sole main_code {codes[0]!r} is neither a "
+                                        "parenthesized code nor a known rarity label")
+        code_text, rarity_text = None, codes[0]
+    else:
+        code_text = codes[0] if codes else None
+        rarity_text = codes[1] if len(codes) == 2 else None
     card_number = printed_code(code_text, url, product_id)
     card_types = [text_of(font) for font in table.select("font.card_type")]
     card_types2 = [text_of(font) for font in table.select("font.card_type2")]
@@ -302,6 +318,8 @@ def cardmoa_product(table, form, category, url):
            "hidden_it_amount": hidden_amount}
     if not codes:
         raw["identity_evidence"] = "listing prints no main_code: no card code and no rarity"
+    elif code_text is None:
+        raw["identity_evidence"] = f"listing prints no card code; its only main_code {rarity_text!r} is a rarity label"
 
     amounts = table.select("span.amount")
     if len(amounts) > 1:

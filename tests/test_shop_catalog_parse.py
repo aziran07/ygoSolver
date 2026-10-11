@@ -26,7 +26,9 @@ def parse(name, body=None, url=None):
     body = fixture(name) if body is None else body
     url = MANIFEST[name]["url"] if url is None else url
     if name.startswith("cardmoa"):
-        size = 140 if name.startswith("cardmoa_ko_") and MANIFEST[name]["page_number"] > 1 else 91 if name == "cardmoa_ja_last" else None
+        size = None
+        if MANIFEST[name]["page_number"] > 1:
+            size = 140 if name.startswith("cardmoa_ko_") else 91
         return parser.parse_cardmoa_page(body, url, page_size=size)
     return parser.parse_tcgshop_page(body, url)
 
@@ -119,6 +121,24 @@ class CatalogSourceContracts(unittest.TestCase):
         self.assertIsNone(row.get("card_number"))
         self.assertIsNone(row.get("rarity_label"))
         self.assertTrue(row["raw"]["locale_evidence"])
+
+    def test_rarity_without_printed_number_stays_unresolved(self):
+        row = next(row for row in parse("cardmoa_ja_page160")["products"] if row["product_id"] == "1561637852")
+        self.assertEqual((row["price_krw"], row["list_price_krw"]), (12000, 15000))
+        self.assertEqual(row["rarity_label"], "페러럴레어")
+        self.assertIsNone(row.get("card_number"))
+        self.assertIsNone(row["locale"])
+        self.assertTrue(row["raw"]["locale_evidence"])
+
+    def test_malformed_present_card_number_cannot_be_reinterpreted_as_a_rarity(self):
+        for name, before in (("cardmoa_ko_first", b"(BP1-KR163)"),
+                             ("cardmoa_ja_page160", "페러럴레어".encode("euc-kr"))):
+            original = fixture(name)
+            start = original.index(b"name='fitem1561637852'") if name == "cardmoa_ja_page160" else 0
+            broken = original[:start] + original[start:].replace(before, b"BP1-KR163", 1)
+            self.assertNotEqual(broken, original)
+            with self.subTest(name=name), self.assertRaises(ShopCatalogError):
+                parse(name, broken)
 
     def test_unrelated_mixed_encoding_is_separate_from_invalid_product_text(self):
         body = fixture("cardmoa_ko_first")

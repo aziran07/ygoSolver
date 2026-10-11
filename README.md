@@ -477,7 +477,7 @@ GROUP BY r.id ORDER BY r.id"
 열: `locale`, `card_number`, `rarity_label`, `rarity_mapping_status`, `price_krw`, `shop`, `product_id`, `product_url`, `run_id`, `page_number`, `observed_at`.
 
 - **어느 실행인가**: 상점·분류마다 **가장 최근 실행(가장 큰 ID) 하나만** 보고, 그 실행이 `completed`일 때만 씁니다.
-  최근 실행이 `running`이거나 `failed`이면 그 분류는 뷰에서 빠지며, **이전 완료 실행으로 대신하지 않습니다**(오래된 가격을 섞지 않음). 그 분류를 다시 보려면 새 실행을 끝까지 완료합니다.
+  최근 실행이 `running`이거나 `failed`이면 그 분류는 뷰에서 빠지며, **이전 완료 실행으로 대신하지 않습니다**(오래된 가격을 섞지 않음). 그 실행을 `--run-id`로 이어서 완료하거나 새 실행을 끝까지 완료해야 다시 나타납니다.
 - **묶는 기준**: 판본(`locale`) + 상점이 찍은 **수록 번호** + 레어도입니다. 공식 CID로 확인한 연결이 아니며 카드 이름도 쓰지 않습니다.
   수록 번호에서는 상점이 붙인 상태 등급 표기만 지웁니다: 끝의 `A급`, `(A급)`, ` (A급)`(B급·C급도 같은 형태). 예: `RC02-KR003A급` → `RC02-KR003`, `DE01-JP158(A급)` → `DE01-JP158`.
   `VP24-JP002(신)`, `26LP-KR002(마크)` 같은 다른 표기는 다른 인쇄일 수 있어 그대로 둡니다.
@@ -500,17 +500,17 @@ docker compose exec -T postgres psql -U ygosolver -d ygosolver -c "
 SELECT * FROM shop_catalog_lowest_prices WHERE card_number = 'WC08-KR002' AND locale = 'ko'"
 ```
 
-최근 완료 실행에서 최저가 계산에 들어가지 않은 상품 수와 마감 미확인 행 수입니다:
+최근 실행의 저장 건수·누락된 상품 정보와 최저가 뷰의 마감 미확인 행 수입니다. 실행 상태가 `completed`인지 함께 확인합니다:
 
 ```sh
 docker compose exec -T postgres psql -U ygosolver -d ygosolver -c "
 WITH latest AS (SELECT DISTINCT ON (shop, category) id, shop, category, status
                 FROM shop_catalog_runs ORDER BY shop, category, id DESC)
 SELECT l.shop, l.category, l.status, count(p.product_id) AS products,
-       count(*) FILTER (WHERE p.locale IS NULL) AS no_locale,
-       count(*) FILTER (WHERE p.card_number IS NULL) AS no_card_number,
-       count(*) FILTER (WHERE p.rarity_label IS NULL) AS no_rarity,
-       count(*) FILTER (WHERE p.price_krw IS NULL) AS no_price
+       count(p.product_id) FILTER (WHERE p.locale IS NULL) AS no_locale,
+       count(p.product_id) FILTER (WHERE p.card_number IS NULL) AS no_card_number,
+       count(p.product_id) FILTER (WHERE p.rarity_label IS NULL) AS no_rarity,
+       count(p.product_id) FILTER (WHERE p.price_krw IS NULL) AS no_price
 FROM latest l LEFT JOIN shop_catalog_products p ON p.run_id = l.id
 GROUP BY l.shop, l.category, l.status ORDER BY l.shop, l.category"
 docker compose exec -T postgres psql -U ygosolver -d ygosolver -c "
